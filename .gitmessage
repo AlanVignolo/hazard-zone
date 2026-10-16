@@ -1,0 +1,22 @@
+# <tipo>(<alcance>): <descripcion en imperativo, <=50 chars, sin punto final>
+#
+# Cuerpo: el POR QUE, no el que. El que ya esta en el diff. (<=72 chars/linea)
+#
+# Footer: Refs #12 / BREAKING CHANGE: <que se rompe>
+#
+# --- tipos -----------------------------------------------------------
+# feat      funcionalidad nueva
+# fix       correccion de bug
+# test      solo tests
+# refactor  cambio interno sin cambiar comportamiento
+# perf      mejora de rendimiento
+# docs      documentacion
+# build     dependencias, pyproject, Docker
+# ci        GitHub Actions
+# chore     tareas varias
+#
+# --- alcances --------------------------------------------------------
+# camera geometry detector tracker zone can metrics bench config
+#
+# Regla: "si se aplica, este commit va a <descripcion>"
+# Imperativo: "add parser", NO "added parser" ni "adds parser".
