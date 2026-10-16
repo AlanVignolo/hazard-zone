@@ -61,3 +61,5 @@ select = [
 ignore = [
     "E501",  # line length is handled by the formatter
 ]
+
+license = { text = "MIT" }
