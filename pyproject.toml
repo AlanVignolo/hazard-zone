@@ -1,0 +1,46 @@
+[project]
+name = "hazard-zone"
+version = "0.1.0"
+description = "Edge AI hazard zone monitor for machinery: camera -> YOLO -> CAN"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.24,<2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Installed on the Jetson only. python-can needs a Linux SocketCAN backend.
+device = [
+    "python-can>=4.2",
+]
+
+[dependency-groups]
+dev = [
+    "commitizen>=3.31.0",
+    "pre-commit>=3.5.0",
+    "pytest>=8.3.5",
+    "pytest-cov>=5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "hardware: requires a real camera, CAN interface or GPU (skipped by default)",
+]
+addopts = "-m 'not hardware'"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hazard_zone"]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+version_files = ["pyproject.toml:^version"]
+tag_format = "v$version"
+update_changelog_on_bump = true
+major_version_zero = true

@@ -1,0 +1,18 @@
+# Normalize to LF in the repository; Git checks out native line endings.
+* text=auto
+
+# Files that must keep LF even on Windows: they run on Linux.
+*.sh      text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+*.service text eol=lf
+Dockerfile text eol=lf
+*.py      text eol=lf
+
+# Binary: never touch.
+*.pt     binary
+*.onnx   binary
+*.engine binary
+*.jpg    binary
+*.png    binary
+*.mp4    binary
