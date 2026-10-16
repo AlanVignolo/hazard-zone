@@ -8,3 +8,21 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Models and engines: never commit weights or TensorRT engines
+*.pt
+*.onnx
+*.engine
+*.plan
+
+# Recorded video and captures
+*.mp4
+*.avi
+*.mkv

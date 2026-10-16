@@ -16,3 +16,10 @@ repos:
       - id: check-added-large-files
         args: ["--maxkb=2048"]
       - id: check-merge-conflict
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
