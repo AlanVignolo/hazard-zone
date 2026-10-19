@@ -1,0 +1,209 @@
+Driver Info:
+	Driver name      : uvcvideo
+	Card type        : Depth Camera
+	Bus info         : usb-xhci-3.4
+	Driver version   : 5.10.216
+	Capabilities     : 0x84a00001
+		Video Capture
+		Metadata Capture
+		Streaming
+		Extended Pix Format
+		Device Capabilities
+	Device Caps      : 0x04200001
+		Video Capture
+		Streaming
+		Extended Pix Format
+Media Driver Info:
+	Driver name      : uvcvideo
+	Model            : Depth Camera
+	Serial           : 0000000000
+	Bus info         : usb-xhci-3.4
+	Media version    : 5.10.216
+	Hardware revision: 0x000050cc (20684)
+	Driver version   : 5.10.216
+Interface Info:
+	ID               : 0x03000008
+	Type             : V4L Video
+Entity Info:
+	ID               : 0x00000007 (7)
+	Name             : Depth Camera
+	Function         : V4L2 I/O
+	Pad 0x01000011   : 0: Sink
+	  Link 0x0200001b: from remote pad 0x1000010 of entity 'Depth Camera': Data, Enabled, Immutable
+ioctl: VIDIOC_ENUM_FMT
+	Type: Video Capture
+
+	[0]: 'GREY' (8-bit Greyscale)
+		Size: Discrete 256x144
+			Interval: Discrete 0.003s (300.000 fps)
+			Interval: Discrete 0.011s (90.000 fps)
+		Size: Discrete 424x240
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 480x270
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 640x360
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 640x480
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 848x100
+			Interval: Discrete 0.003s (300.000 fps)
+			Interval: Discrete 0.010s (100.000 fps)
+		Size: Discrete 848x480
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 1280x720
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+	[1]: 'UYVY' (UYVY 4:2:2)
+		Size: Discrete 256x144
+			Interval: Discrete 0.003s (300.000 fps)
+			Interval: Discrete 0.011s (90.000 fps)
+		Size: Discrete 424x240
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 480x270
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 640x360
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 640x480
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 848x100
+			Interval: Discrete 0.003s (300.000 fps)
+			Interval: Discrete 0.010s (100.000 fps)
+		Size: Discrete 848x480
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 1280x720
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+	[2]: 'GREY' (8-bit Greyscale)
+		Size: Discrete 256x144
+			Interval: Discrete 0.003s (300.000 fps)
+			Interval: Discrete 0.011s (90.000 fps)
+		Size: Discrete 424x240
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 480x270
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 640x360
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 640x480
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 848x100
+			Interval: Discrete 0.003s (300.000 fps)
+			Interval: Discrete 0.010s (100.000 fps)
+		Size: Discrete 848x480
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 1280x720
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+	[3]: 'Y8I ' (Interleaved 8-bit Greyscale)
+		Size: Discrete 256x144
+			Interval: Discrete 0.003s (300.000 fps)
+			Interval: Discrete 0.011s (90.000 fps)
+		Size: Discrete 424x240
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 480x270
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 640x360
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 640x480
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 848x100
+			Interval: Discrete 0.003s (300.000 fps)
+			Interval: Discrete 0.010s (100.000 fps)
+		Size: Discrete 848x480
+			Interval: Discrete 0.011s (90.000 fps)
+			Interval: Discrete 0.017s (60.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 1280x720
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.167s (6.000 fps)
+		Size: Discrete 1280x800
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+	[4]: 'Y12I' (Interleaved 12-bit Greyscale)
+		Size: Discrete 640x400
+			Interval: Discrete 0.040s (25.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
+		Size: Discrete 1280x800
+			Interval: Discrete 0.040s (25.000 fps)
+			Interval: Discrete 0.067s (15.000 fps)
