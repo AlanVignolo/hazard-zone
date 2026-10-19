@@ -12,7 +12,7 @@ Reference: https://www.kernel.org/doc/html/latest/userspace-api/media/v4l/
 """
 
 import re
-from typing import List, NamedTuple, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 
 class CameraFormat(NamedTuple):
@@ -182,23 +182,37 @@ def parse_v4l2_formats(text: str) -> List[CameraFormat]:
         dropped, so callers can still see the resolution exists.
     """
     formats: List[CameraFormat] = []
+    seen: Dict[Tuple[str, int, int], Sequence[float]] = {}
+    order: Dict[Tuple[str, int, int], int] = {}
     fourcc: Optional[str] = None
     size: Optional[Tuple[int, int]] = None
     rates: List[float] = []
 
     def flush() -> None:
-        """Emit the format being accumulated, if any."""
+        """Emit the mode being accumulated, merging it if already seen.
+
+        A driver may list the same fourcc and resolution more than once --
+        this camera reports Z16 and GREY twice each, as separate indices with
+        identical capabilities. Those are one capability declared twice, so
+        the rates are merged rather than producing duplicate entries.
+        """
         if fourcc is None or size is None:
             return
-        formats.append(
-            CameraFormat(
-                fourcc=fourcc,
-                width=size[0],
-                height=size[1],
-                rates=tuple(sorted(set(rates), reverse=True)),
-                compressed=fourcc.strip().upper() in COMPRESSED_FOURCCS,
-            )
+        key = (fourcc, size[0], size[1])
+        merged = sorted(set(rates) | set(seen.get(key, ())), reverse=True)
+        seen[key] = merged
+        entry = CameraFormat(
+            fourcc=fourcc,
+            width=size[0],
+            height=size[1],
+            rates=tuple(merged),
+            compressed=fourcc.strip().upper() in COMPRESSED_FOURCCS,
         )
+        if key in order:
+            formats[order[key]] = entry
+        else:
+            order[key] = len(formats)
+            formats.append(entry)
 
     for line in text.splitlines():
         m = _FMT_RE.match(line)
