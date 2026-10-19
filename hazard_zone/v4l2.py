@@ -115,7 +115,9 @@ class VideoNode(NamedTuple):
     @property
     def colour_formats(self) -> Tuple[CameraFormat, ...]:
         """Capture modes a detector can consume, depth and IR excluded."""
-        return tuple(f for f in self.formats if f.fourcc.upper() in COLOUR_FOURCCS)
+        return tuple(
+            f for f in self.formats if f.fourcc.strip().upper() in COLOUR_FOURCCS
+        )
 
     @property
     def is_colour(self) -> bool:
@@ -154,7 +156,7 @@ COMPRESSED_FOURCCS = frozenset(
 )  # Compressed formats: immutable, O(1) lookup
 
 # "	[0]: 'MJPG' (Motion-JPEG, compressed)"
-_FMT_RE = re.compile(r"^\s*\[\d+\]:\s*'(\w+)'")
+_FMT_RE = re.compile(r"^\s*\[\d+\]:\s*'([^']+)'")
 
 # "		Size: Discrete 1280x720"
 _SIZE_RE = re.compile(r"^\s*Size:\s*Discrete\s+(\d+)x(\d+)")
@@ -194,7 +196,7 @@ def parse_v4l2_formats(text: str) -> List[CameraFormat]:
                 width=size[0],
                 height=size[1],
                 rates=tuple(sorted(set(rates), reverse=True)),
-                compressed=fourcc.upper() in COMPRESSED_FOURCCS,
+                compressed=fourcc.strip().upper() in COMPRESSED_FOURCCS,
             )
         )
 
@@ -345,9 +347,13 @@ def select_node(
 
     if len(scored) > 1:
         for _, n, m in scored[1:]:
-            rejected.append(
-                (n.path, f"{m.width}x{m.height} beaten by {mode.width}x{mode.height}")
-            )
+            if (m.width, m.height) != (mode.width, mode.height):
+                why = f"{m.width}x{m.height} beaten by {mode.width}x{mode.height}"
+            elif not any(f.compressed for f in n.colour_formats):
+                why = f"ties at {m.width}x{m.height} but offers no compressed mode"
+            else:
+                why = f"ties at {m.width}x{m.height}; lower device number wins"
+            rejected.append((n.path, why))
 
     reason = (
         f"{winner.card or winner.path} offers {mode.width}x{mode.height} at {fps:g} fps"
@@ -394,9 +400,11 @@ def pick_format(
     property, while a smaller frame only shortens detection range -- that is
     graceful degradation rather than failure.
 
-    Unlike ``select_node``, which asks whether a camera is capable at all and
-    so treats the rate as a floor, this decides what to ask the driver for and
-    therefore matches the rate exactly.
+    The rate is a floor, not an exact match: a mode that reports 60 fps can
+    be driven at 30. Cameras differ in how they report this -- some list
+    every achievable interval, others only the fastest for each resolution --
+    and V4L2 negotiates the nearest achievable rate rather than refusing an
+    unlisted one.
 
     Selection order:
       1. Drop modes that cannot deliver ``fps`` (within ``fps_tol``).
@@ -425,7 +433,7 @@ def pick_format(
     if not formats:
         return FormatChoice(None, fps, "no formats reported")
 
-    usable = [f for f in formats if f.supports(fps, fps_tol)]
+    usable = [f for f in formats if f.supports_at_least(fps, fps_tol)]
     if not usable:
         best = max((f.max_fps for f in formats), default=0.0)
         return FormatChoice(

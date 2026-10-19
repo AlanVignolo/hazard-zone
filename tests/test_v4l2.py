@@ -416,8 +416,9 @@ def test_rejection_list_explains_each_discard(two_cameras):
     reasons = dict(choice.rejected)
     assert "metadata" in reasons["/dev/video1"]
     assert "colour" in reasons["/dev/video2"]
-    # The depth camera's colour node competes but loses on resolution.
-    assert "beaten by" in reasons["/dev/video6"]
+    # The depth camera's colour node ties on resolution and loses on the
+    # compression tie-break, so its reason must name the resolution.
+    assert "1920x1080" in reasons["/dev/video6"]
 
 
 def test_reason_names_the_winning_mode(two_cameras):
@@ -430,9 +431,9 @@ def test_higher_fps_narrows_the_field(two_cameras):
     """At 60 fps the depth camera cannot sustain its largest modes."""
     choice = select_node(two_cameras, fps=60)
     assert choice.node.path == "/dev/video0"
-    # video6 does 1080p and 720p only at 30, so at 60 it drops to 960x540.
-    reasons = dict(choice.rejected)
-    assert "960x540 beaten by 1920x1080" in reasons["/dev/video6"]
+    # video6 does 1080p and 720p only at 30, so at 60 it can only offer
+    # 960x540 and loses on resolution.
+    assert "960x540" in dict(choice.rejected)["/dev/video6"]
 
 
 def test_unreachable_fps_returns_nothing(two_cameras):
