@@ -9,11 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from hazard_zone.v4l2 import (  # noqa: E402
+from hazard_zone.v4l2 import (  # noqa: E402  # noqa: E402
     COMPRESSED_FOURCCS,
     CameraFormat,
     VideoNode,
     parse_v4l2_formats,
+    parse_v4l2_info,
+    pick_format,
     select_node,
 )
 
@@ -540,3 +542,198 @@ def test_path_without_a_number_does_not_crash():
         tuple(_modes("YUYV", [(640, 480)], [30.0], False)),
     )
     assert select_node([node], fps=30).node is node
+
+
+# --------------------------------------------------------------------------
+# Characterisation tests against captured output from real hardware.
+#
+# The fixtures above were written by hand and cover edge cases; these are
+# verbatim v4l2-ctl output from two cameras (anonymised), and exist because
+# the handwritten ones missed real details: space-padded fourccs, formats
+# listed twice, interleaved greyscale modes, a card name containing a colon.
+# Every one of those was a bug found only by running against the devices.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def real_nodes():
+    """Parsed output of the four capture nodes on a two-camera machine."""
+    nodes = {}
+    for name, dev in (
+        ("webcam", "/dev/video0"),
+        ("depth_z16", "/dev/video2"),
+        ("depth_ir", "/dev/video4"),
+        ("depth_colour", "/dev/video6"),
+    ):
+        text = (FIXTURES / f"v4l2_{name}.txt").read_text(encoding="utf-8")
+        card, bus, caps = parse_v4l2_info(text)
+        nodes[name] = VideoNode(dev, card, bus, caps, tuple(parse_v4l2_formats(text)))
+    return nodes
+
+
+# --- parse_v4l2_info on real output ---------------------------------------
+
+
+def test_real_card_name_containing_a_colon(real_nodes):
+    """The card name itself contains ': ', so splitting on it would truncate."""
+    assert real_nodes["webcam"].card == "USB Camera: USB Camera"
+
+
+def test_real_bus_info_is_captured(real_nodes):
+    assert real_nodes["webcam"].bus == "usb-xhci-3.1"
+    assert real_nodes["depth_colour"].bus == "usb-xhci-3.4"
+
+
+def test_real_capture_nodes_report_the_capture_bit(real_nodes):
+    assert all(n.is_capture for n in real_nodes.values())
+
+
+def test_device_caps_is_read_not_driver_caps(real_nodes):
+    """Both masks are in the output, and the words beside them are identical.
+
+    v4l2-ctl prints ``Capabilities`` for what the driver supports and
+    ``Device Caps`` for what this node does, listing "Video Capture" under
+    each; a third occurrence heads the format listing and means something
+    else again. Matching that phrase would mark every node of a camera as a
+    capture node, metadata ones included. Only the number distinguishes them,
+    which is why the parser reads the hex value.
+    """
+    text = (FIXTURES / "v4l2_webcam.txt").read_text(encoding="utf-8")
+    assert "Capabilities     : 0x84a00001" in text  # driver-wide mask
+    assert "Device Caps      : 0x04200001" in text  # this node's mask
+    assert text.count("Video Capture") == 3  # the trap, in three contexts
+    assert parse_v4l2_info(text)[2] == 0x04200001
+
+
+# --- parse_v4l2_formats on real output ------------------------------------
+
+
+def test_real_space_padded_fourcc_is_parsed(real_nodes):
+    """V4L2 fourccs are four characters, space-padded when the name is shorter."""
+    assert {f.fourcc for f in real_nodes["depth_z16"].formats} == {"Z16 "}
+
+
+def test_real_interleaved_greyscale_formats_are_parsed(real_nodes):
+    assert {f.fourcc for f in real_nodes["depth_ir"].formats} == {
+        "GREY",
+        "UYVY",
+        "Y8I ",
+        "Y12I",
+    }
+
+
+def test_real_formats_listed_twice_are_merged(real_nodes):
+    """This camera declares Z16 and GREY under two indices each."""
+    for name in ("depth_z16", "depth_ir"):
+        keys = [(f.fourcc, f.width, f.height) for f in real_nodes[name].formats]
+        assert len(set(keys)) == len(keys), name
+
+
+def test_real_high_frame_rate_mode_is_parsed(real_nodes):
+    """The depth sensor reports a 300 fps mode at its smallest resolution."""
+    small = next(
+        f for f in real_nodes["depth_z16"].formats if (f.width, f.height) == (256, 144)
+    )
+    assert small.max_fps == 300.0
+
+
+def test_real_webcam_reports_only_its_top_rate(real_nodes):
+    """One camera lists every interval; this one lists only the fastest.
+
+    That asymmetry is why the frame rate has to be treated as a floor.
+    """
+    for f in real_nodes["webcam"].formats:
+        assert f.rates == (60.0,)
+
+
+def test_real_other_camera_lists_several_rates(real_nodes):
+    vga = next(
+        f
+        for f in real_nodes["depth_colour"].formats
+        if (f.width, f.height) == (640, 480) and f.fourcc == "YUYV"
+    )
+    assert len(vga.rates) > 1
+
+
+def test_real_mjpg_is_flagged_compressed(real_nodes):
+    mjpg = [f for f in real_nodes["webcam"].formats if f.fourcc == "MJPG"]
+    assert mjpg and all(f.compressed for f in mjpg)
+
+
+def test_real_padded_fourcc_compression_lookup_is_stripped(real_nodes):
+    """'Z16 ' must not be treated as compressed because of its space."""
+    assert not any(f.compressed for f in real_nodes["depth_z16"].formats)
+
+
+# --- the capability filters on real output --------------------------------
+
+
+def test_real_depth_node_offers_no_colour(real_nodes):
+    node = real_nodes["depth_z16"]
+    assert node.is_capture
+    assert not node.is_colour
+
+
+def test_real_bayer_is_not_treated_as_colour(real_nodes):
+    """The colour node also offers raw Bayer, which a detector cannot use."""
+    node = real_nodes["depth_colour"]
+    assert "BYR2" in {f.fourcc for f in node.formats}
+    assert "BYR2" not in {f.fourcc for f in node.colour_formats}
+
+
+def test_real_infrared_passes_the_colour_filter(real_nodes):
+    """Documented surprise: the IR node reports UYVY, so it is not excluded.
+
+    Resolution is what rules it out in selection, not the format filter.
+    """
+    node = real_nodes["depth_ir"]
+    assert node.is_colour
+    assert {f.fourcc for f in node.colour_formats} == {"UYVY"}
+
+
+# --- end-to-end selection on real output ----------------------------------
+
+
+def test_real_selection_prefers_the_webcam(real_nodes):
+    nodes = list(real_nodes.values())
+    choice = select_node(nodes, fps=30)
+    assert choice.node.path == "/dev/video0"
+
+
+def test_real_selection_at_60_fps_still_works(real_nodes):
+    nodes = list(real_nodes.values())
+    choice = select_node(nodes, fps=60)
+    assert choice.ok
+    assert choice.node.path == "/dev/video0"
+
+
+def test_real_card_filter_picks_the_depth_camera(real_nodes):
+    nodes = list(real_nodes.values())
+    choice = select_node(nodes, fps=30, card="depth")
+    assert choice.node.path == "/dev/video6"
+
+
+def test_real_720p30_is_available_on_the_webcam(real_nodes):
+    """Regression guard: this failed before the rate became a floor.
+
+    The camera lists 1280x720 only at 60 fps, so an exact match rejected a
+    30 fps request outright.
+    """
+    fmt = pick_format(real_nodes["webcam"].colour_formats, 1280, 720, 30)
+    assert fmt.ok
+    assert (fmt.fmt.width, fmt.fmt.height) == (1280, 720)
+    assert fmt.exact
+
+
+def test_real_raw_only_selects_an_uncompressed_mode(real_nodes):
+    fmt = pick_format(
+        real_nodes["webcam"].colour_formats, 1280, 720, 30, allow_compressed=False
+    )
+    assert fmt.ok
+    assert fmt.fmt.fourcc == "YUYV"
+    assert not fmt.fmt.compressed
+
+
+def test_real_compressed_is_preferred_by_default(real_nodes):
+    fmt = pick_format(real_nodes["webcam"].colour_formats, 1280, 720, 30)
+    assert fmt.fmt.compressed
