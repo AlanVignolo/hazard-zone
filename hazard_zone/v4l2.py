@@ -1,12 +1,14 @@
-"""Camera discovery, capability negotiation and frame delivery.
+"""V4L2 capability description and device selection.
 
-This module covers pieces 1-3 of the pipeline:
-  1. V4L2 capability discovery  (parse_v4l2_formats, query_v4l2_formats)
-  2. GStreamer pipeline building (build_pipeline)
-  3. Latest-frame slot          (LatestFrame)
+Everything here is a pure function over plain data: text in, objects out. No
+subprocess, no device access. That is what allows the full edge-case surface
+to be covered on a development machine in a fraction of a second, including
+cases that would be hard to reproduce with real hardware.
 
-Design note: parsing is kept separate from the subprocess call so the parser
-can be tested on captured text without any camera attached.
+The parts that do touch hardware live elsewhere: ``probe`` runs v4l2-ctl and
+feeds this module its output, and ``capture`` moves frames.
+
+Reference: https://www.kernel.org/doc/html/latest/userspace-api/media/v4l/
 """
 
 import re
@@ -235,7 +237,7 @@ class NodeChoice(NamedTuple):
         return self.node is not None
 
 
-def _node_index(path: str) -> int:
+def device_index(path: str) -> int:
     """Numeric suffix of a device path, for deterministic tie-breaking.
 
     Paths without a trailing number sort last rather than raising, so a
@@ -333,7 +335,7 @@ def select_node(
             rejected.append((n.path, f"cannot reach {fps:g} fps (best {best:g})"))
             continue
         compressed = any(f.compressed for f in n.colour_formats)
-        scored.append(((mode.pixels, compressed, -_node_index(n.path)), n, mode))
+        scored.append(((mode.pixels, compressed, -device_index(n.path)), n, mode))
 
     if not scored:
         return NodeChoice(None, f"no node reaches {fps:g} fps", tuple(rejected))

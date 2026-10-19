@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from hazard_zone.camera import (  # noqa: E402
+from hazard_zone.v4l2 import (  # noqa: E402
     COMPRESSED_FOURCCS,
     CameraFormat,
     VideoNode,
