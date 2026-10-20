@@ -27,6 +27,6 @@ htmlcov/
 *.avi
 *.mkv
 
-docs/idea.md
+docs
 
-docs/idea.md
+camera-probe
