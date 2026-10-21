@@ -18,6 +18,7 @@ device = [
 
 [dependency-groups]
 dev = [
+    "mypy>=1.14.1",
     "pre-commit>=3.5.0",
     "pytest>=8.3.5",
     "pytest-cov>=5.0",
@@ -62,3 +63,22 @@ select = [
 ignore = [
     "E501",  # line length is handled by the formatter
 ]
+
+[fool.mypy]
+python_version = "3.8"
+# Gradual mode: catch the errors that matter without fighting untyped C
+# bindings. strict would demand annotations everywhere, including for numpy
+# and GStreamer, for little gain.
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_optional = true
+check_untyped_defs = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+# These ship no type information, and insisting on it produces noise rather
+# than findings.
+module = ["gi.*", "cv2.*", "numpy.*", "can.*"]
+ignore_missing_imports = true
