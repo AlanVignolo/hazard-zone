@@ -15,12 +15,8 @@ import glob
 import subprocess
 from typing import List
 
-from hazard_zone.v4l2 import (
-    VideoNode,
-    device_index,
-    parse_v4l2_formats,
-    parse_v4l2_info,
-)
+from hazard_zone.negotiate import device_index
+from hazard_zone.v4l2 import VideoNode, parse_v4l2_formats, parse_v4l2_info
 
 #: Seconds to wait for one v4l2-ctl call before giving up on that device.
 QUERY_TIMEOUT = 5.0

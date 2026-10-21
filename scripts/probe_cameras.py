@@ -12,8 +12,8 @@ decision can be checked by eye before anything depends on it.
 
 import argparse
 
+from hazard_zone.negotiate import pick_format, select_node
 from hazard_zone.probe import probe_video_nodes
-from hazard_zone.v4l2 import pick_format, select_node
 
 RULE = "=" * 72
 
