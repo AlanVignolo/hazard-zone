@@ -7,7 +7,6 @@ the device.
 """
 
 import pytest
-
 from hazard_zone.pipeline import (
     COMPRESSED_INPUTS,
     DECODERS_HW,
@@ -57,8 +56,33 @@ def test_accelerated_pipeline_uses_two_converters():
 
 def test_raw_format_gets_no_decoder():
     launch = build_pipeline("/dev/video0", 640, 480, 30, fourcc="YUYV").launch
-    assert "video/x-raw,format=YUYV,width=640,height=480,framerate=30/1" in launch
+    assert "video/x-raw,format=YUY2,width=640,height=480,framerate=30/1" in launch
     assert "jpegdec" not in launch
+
+
+def test_raw_fourcc_is_translated_to_the_gstreamer_name():
+    """Regression guard: V4L2 and GStreamer name the same bytes differently.
+
+    V4L2 reports YUYV; GStreamer knows the identical layout as YUY2 and
+    refuses to link an element asked for a name it does not have. Writing the
+    V4L2 name through failed on the device with "neither element can handle
+    caps", which named the caps and not the cause.
+    """
+    launch = build_pipeline("/dev/video0", 1280, 720, 30, fourcc="YUYV").launch
+    assert "format=YUY2" in launch
+    assert "format=YUYV" not in launch
+
+
+def test_unknown_raw_format_raises():
+    """An unlisted raw format must fail loudly, not be written through.
+
+    The same mistake as VP9: absence from a table says nothing about the
+    format, so passing it through produces a pipeline that cannot negotiate
+    and blames the hardware for a configuration error.
+    """
+    with pytest.raises(ValueError) as err:
+        build_pipeline("/dev/video0", 640, 480, 30, fourcc="XYZ9")
+    assert "XYZ9" in str(err.value)
 
 
 def test_media_type_matches_the_fourcc():

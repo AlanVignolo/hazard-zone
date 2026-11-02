@@ -32,6 +32,43 @@ DECODERS_HW = {
     "HEVC": "nvv4l2decoder",
 }
 
+#: GStreamer's name for each raw fourcc V4L2 reports. The two vocabularies
+#: agree more often than not, which is what makes the disagreements
+#: dangerous: writing the V4L2 name straight into a caps filter works until
+#: it silently does not. V4L2 calls packed 4:2:2 with luma first ``YUYV``;
+#: GStreamer calls the identical byte layout ``YUY2``, and refuses to link
+#: an element asked for a format it has no name for. Measured consequence: a
+#: pipeline that failed with "neither element can handle caps", naming the
+#: caps but not the reason.
+#:
+#: Only formats a detector can consume are listed. This is an allowlist: a
+#: fourcc absent from it makes build_pipeline raise rather than be written
+#: through unchecked.
+RAW_FORMATS = {
+    # Packed YUV 4:2:2. Same bytes, different component order.
+    "YUYV": "YUY2",
+    "YVYU": "YVYU",
+    "UYVY": "UYVY",
+    "VYUY": "VYUY",
+    # Planar and semi-planar YUV. The names agree except for one.
+    "NV12": "NV12",
+    "NV21": "NV21",
+    "YU12": "I420",
+    "YV12": "YV12",
+    # Packed RGB. V4L2 appends the byte count, GStreamer does not.
+    "RGB3": "RGB",
+    "BGR3": "BGR",
+    "RGB4": "RGBx",
+    "BGR4": "BGRx",
+    "AR24": "BGRA",
+    "XR24": "BGRx",
+    # Greyscale. The infrared node reports this; listed so a pipeline can be
+    # built for one deliberately, not because it is a sensible detector input.
+    "GREY": "GRAY8",
+    "Y16 ": "GRAY16_LE",
+}
+
+
 #: Media type a caps filter must declare for each compressed fourcc.
 MEDIA_TYPES = {
     "MJPG": "image/jpeg",
@@ -57,11 +94,18 @@ class Pipeline(NamedTuple):
     when a pipeline refuses to start, the log has to say which decode path
     was selected and why, since the same request produces different element
     chains depending on the source and the format.
+
+    The requested rate travels with the description because a camera can
+    accept a rate it does not deliver -- measured here: a camera advertising
+    30 and 60 fps negotiated 30/1 and produced 15, silently. Without the
+    requested value to compare against, nothing downstream can tell that
+    the rate it believes in is twice the real one.
     """
 
     launch: str
     accelerated: bool
     reason: str
+    fps: float = 0.0
 
     def __str__(self) -> str:
         return self.launch
@@ -155,8 +199,14 @@ def build_pipeline(
                 f"{MEDIA_TYPES[code]},width={width},height={height},framerate={rate}"
             )
         else:
+            if code not in RAW_FORMATS:
+                raise ValueError(
+                    f"no GStreamer name known for raw format {code!r}; "
+                    f"add it to RAW_FORMATS if a detector can consume it"
+                )
             parts.append(
-                f"video/x-raw,format={code},width={width},height={height},framerate={rate}"
+                f"video/x-raw,format={RAW_FORMATS[code]},"
+                f"width={width},height={height},framerate={rate}"
             )
     elif source == "file":
         # decodebin picks demuxer and decoder from the file itself, so one
@@ -209,10 +259,13 @@ def build_pipeline(
     if source != "v4l2":
         path = f"{source} source, decoded by decodebin"
     elif not compressed:
-        path = f"raw {code} needs no decoder"
+        # Both names: a negotiation failure on a raw format is almost always
+        # a disagreement between the two vocabularies, and the log has to
+        # show which translation was applied.
+        path = f"raw {code} (GStreamer {RAW_FORMATS[code]}) needs no decoder"
     elif accelerated:
         path = f"{code} via hardware decoder {DECODERS_HW[code]}"
     else:
         path = f"{code} via software decoder {DECODERS_SW[code]}"
 
-    return Pipeline(" ! ".join(parts), accelerated, path)
+    return Pipeline(" ! ".join(parts), accelerated, path, fps)

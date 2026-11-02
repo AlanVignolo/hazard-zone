@@ -13,6 +13,7 @@ pipeline, and retries only the former.
 """
 
 import threading
+import time
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
 from hazard_zone.frames import LatestFrame
@@ -33,12 +34,27 @@ FATAL_ERRORS = (
     "Device is not a capture device",
 )
 
+#: Frames and seconds to let pass before judging the delivered rate. The
+#: first frames arrive from the camera's buffer faster than the camera
+#: produces them, so an average taken too early reads high: measured here,
+#: a camera delivering a steady 15 fps reported 25 after one second and
+#: converged on 15 only after ten.
+GRACE_FRAMES = 45
+GRACE_SECONDS = 3.0
+
 
 class SourceState(NamedTuple):
     """What the source is doing and why, read as one unit.
 
     Exposed so the main loop can report system health over CAN without
     reaching into the source's internals.
+
+    The two rates are separate on purpose. A camera that accepts 30 fps and
+    delivers 15 leaves everything downstream computing reaction times from a
+    number twice the truth, which in a hazard monitor is the difference
+    between warning before someone reaches the machine and warning after.
+    Carrying the measured rate makes the real figure available instead of
+    assumed.
     """
 
     running: bool
@@ -46,10 +62,25 @@ class SourceState(NamedTuple):
     reconnects: int
     last_error: str
     fatal: bool
+    requested_fps: float = 0.0
+    measured_fps: float = 0.0
 
     @property
     def healthy(self) -> bool:
         return self.running and not self.fatal
+
+    @property
+    def rate_ok(self) -> bool:
+        """Whether the camera is delivering close to the requested rate.
+
+        True when nothing was requested or nothing measured yet: an unknown
+        is not a fault. The 80% threshold tolerates the ordinary jitter of a
+        live source while catching a camera delivering half of what it
+        promised.
+        """
+        if not self.requested_fps or not self.measured_fps:
+            return True
+        return self.measured_fps >= 0.8 * self.requested_fps
 
 
 class GstSource:
@@ -109,6 +140,10 @@ class GstSource:
         self._reconnects = 0
         self._last_error = ""
         self._fatal = False
+        # Rate verification. A camera can negotiate a rate it does not
+        # deliver, so the real one is measured rather than trusted.
+        self._started_at = 0.0
+        self._rate_warned = False
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -172,6 +207,8 @@ class GstSource:
         with self._lock:
             self._running = True
             self._last_error = ""
+            self._started_at = time.monotonic()
+            self._rate_warned = False
         return True
 
     def stop(self) -> None:
@@ -221,12 +258,16 @@ class GstSource:
     def state(self) -> SourceState:
         """Current state, read atomically."""
         with self._lock:
+            elapsed = time.monotonic() - self._started_at if self._started_at else 0.0
+            published = self.frames.published
             return SourceState(
                 running=self._running,
                 attempts=self._attempts,
                 reconnects=self._reconnects,
                 last_error=self._last_error,
                 fatal=self._fatal,
+                requested_fps=self.pipeline.fps,
+                measured_fps=published / elapsed if elapsed > 0 else 0.0,
             )
 
     # -- internals ---------------------------------------------------------
@@ -259,6 +300,45 @@ class GstSource:
             self._last_error = message
             if fatal:
                 self._fatal = True
+
+    def _check_rate(self) -> None:
+        """Compare the delivered rate against the requested one, once.
+
+        Called from the frame callback, so it must be cheap: it does nothing
+        but read two counters until the sample is large enough to judge.
+
+        The check cannot happen at startup. Negotiation succeeds -- the
+        camera accepts the rate and the pipeline reaches PLAYING -- and the
+        shortfall only exists over time, so a rate error is invisible until
+        frames have been counted. GRACE_FRAMES exists because the first
+        frames arrive from the camera's buffer in a burst, which makes an
+        early average meaningless.
+
+        This warns and does not fail. A hazard zone watched at 15 fps is
+        worse than at 30 and far better than one not watched at all, so a
+        rate shortfall degrades the system rather than stopping it. What
+        must not happen is the shortfall going unrecorded: the measured
+        rate is published in SourceState for anything downstream that
+        computes with it.
+        """
+        if self._rate_warned or not self.pipeline.fps:
+            return
+
+        elapsed = time.monotonic() - self._started_at
+        published = self.frames.published
+        if published < GRACE_FRAMES or elapsed < GRACE_SECONDS:
+            return
+
+        measured = published / elapsed
+        self._rate_warned = True
+        if measured < 0.8 * self.pipeline.fps:
+            print(
+                f"WARNING: camera delivers {measured:.1f} fps, "
+                f"{self.pipeline.fps:g} was requested "
+                f"({100.0 * measured / self.pipeline.fps:.0f}% of it). "
+                "The system keeps running at the real rate; "
+                "anything computing from the requested rate is wrong."
+            )
 
     def _release(self) -> None:
         """Tear the pipeline down without closing the frame slot."""
@@ -309,6 +389,10 @@ class GstSource:
                 buf.unmap(info)
 
             self.frames.put(image)
+            # Cheap: two counter reads until there are enough frames to judge,
+            # and this runs in GStreamer's streaming thread, where anything
+            # slow throttles the pipeline.
+            self._check_rate()
             return gst.FlowReturn.OK
         except Exception as exc:
             self._fail(f"frame callback failed: {exc}", fatal=False)
