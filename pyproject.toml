@@ -64,7 +64,7 @@ ignore = [
     "E501",  # line length is handled by the formatter
 ]
 
-[fool.mypy]
+[tool.mypy]
 python_version = "3.8"
 # Gradual mode: catch the errors that matter without fighting untyped C
 # bindings. strict would demand annotations everywhere, including for numpy
@@ -80,5 +80,5 @@ show_error_codes = true
 [[tool.mypy.overrides]]
 # These ship no type information, and insisting on it produces noise rather
 # than findings.
-module = ["gi.*", "cv2.*", "numpy.*", "can.*"]
+module = ["gi.*", "cv2.*", "numpy.*", "can.*", "pyrealsense2.*"]
 ignore_missing_imports = true
