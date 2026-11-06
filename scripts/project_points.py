@@ -119,8 +119,8 @@ def run(seconds: float, fps: int) -> Optional[dict]:
                     DEPTH_MAX,
                     d_intr,
                     c_intr,
-                    d_to_c,
                     c_to_d,
+                    d_to_c,
                     [float(POINTS[0][0]), float(POINTS[0][1])],
                 )
                 numpy_ok, numpy_error = accepts_numpy(rs, depth, probe_args)
