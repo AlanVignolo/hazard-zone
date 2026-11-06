@@ -13,6 +13,7 @@ import time
 import pytest
 
 from hazard_zone.frames import Frame, LatestFrame
+from hazard_zone.projection import DepthMap
 
 # --------------------------------------------------------------------------
 # Single-threaded behaviour: the dropping policy
@@ -358,3 +359,26 @@ def test_consumer_always_gets_the_newest_available_frame():
         slot.put(i + 1000)
         frame = slot.get(timeout=0.1)
         assert frame.image == i + 1000
+
+
+# -- depth -----------------------------------------------------------------
+
+
+def test_a_colour_only_frame_cannot_measure():
+    """None says "this camera cannot measure", which is information."""
+    frame = LatestFrame()
+    frame.put("image")
+    got = frame.get(timeout=0)
+    assert got.depth is None
+    assert not got.has_depth
+
+
+def test_depth_arrives_with_its_calibration():
+    """One object, so a map without the numbers to read it cannot exist."""
+    slot = LatestFrame()
+    depth = DepthMap(raw="map", calibration="calibration")
+    slot.put("image", depth=depth)
+    got = slot.get(timeout=0)
+    assert got.has_depth
+    assert got.depth is depth
+    assert got.depth.calibration == "calibration"

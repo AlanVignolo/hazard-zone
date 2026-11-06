@@ -117,6 +117,28 @@ class Calibration(NamedTuple):
     depth_to_colour: Extrinsics
 
 
+class DepthMap(NamedTuple):
+    """A depth map together with what is needed to read it.
+
+    One object rather than two fields on a frame, so a map without its
+    calibration cannot exist: raw units mean nothing without the scale, and
+    a pixel means nothing without the lenses. Built in the capture thread,
+    where both are known, and never taken apart before use.
+
+    The map is in the depth lens's own grid, never aligned to colour. A
+    colour pixel's distance is read through ``colours_to_depth``; indexing
+    ``raw`` with colour coordinates gives the distance of whatever the depth
+    lens sees there, which near an edge is a different object.
+
+    Attributes:
+        raw: (H, W) uint16 as the sensor delivered it; 0 means unknown.
+        calibration: Read from the camera when it was opened.
+    """
+
+    raw: Any
+    calibration: Calibration
+
+
 def deproject(intr: Intrinsics, u: Any, v: Any, z: Any) -> np.ndarray:
     """Pixel plus distance along the lens axis, to a point in metres.
 

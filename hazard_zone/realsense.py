@@ -18,9 +18,10 @@ thresholds -- live in modules that need no device.
 
 import contextlib
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hazard_zone.frames import LatestFrame
+from hazard_zone.projection import Calibration, DepthMap, Extrinsics, Intrinsics
 from hazard_zone.source import FrameSource
 
 #: SDK errors that retrying cannot fix. Everything else is treated as a
@@ -43,13 +44,18 @@ class RealSenseSource(FrameSource):
     until a frame is ready. So this owns a capture thread, which GstSource
     does not need -- GStreamer brings its own streaming thread.
 
-    Colour and depth come from lenses a few centimetres apart, so the same
-    pixel index means a different point in each, and by an amount that
-    depends on distance. ``rs.align`` reprojects the depth map into the
-    colour lens so both agree. It is done here, in the capture thread,
-    rather than left to the consumer, because a depth map that has not been
-    aligned looks exactly like one that has: the bug would be a detection
-    reported at the distance of whatever is behind it, with nothing raised.
+        Depth is published as the sensor delivered it, in its own lens's grid,
+    together with the calibration needed to carry a colour pixel into it
+    (``projection.colours_to_depth``). The whole map is not aligned to
+    colour. ``rs.align`` did that here and measured 8 ms of CPU but 15 ms
+    of this loop per frame, because while it aligned nothing was waiting
+    for the camera -- all for 921,600 pixels, when the detector needs about
+    five. Carrying the detected points instead costs 3.2 ms for twenty,
+    measured, and only on the frames the consumer actually takes.
+
+    The calibration is copied out of the SDK as plain numbers, so nothing
+    the SDK owns outlives this thread. Its pool of framesets is fixed, and
+    holding them elsewhere would stall capture.
 
     Construction touches no hardware, so a source can be built and
     inspected on a machine with no camera; ``start`` is what needs a device.
@@ -63,7 +69,6 @@ class RealSenseSource(FrameSource):
         depth_width: int = 640,
         depth_height: int = 480,
         slot: Optional[LatestFrame] = None,
-        align: bool = True,
         retry_base: float = 1.0,
         retry_max: float = 30.0,
     ) -> None:
@@ -83,8 +88,6 @@ class RealSenseSource(FrameSource):
                 resolution there buys nothing.
             depth_height: Depth height.
             slot: Where to publish frames; a new one is created if omitted.
-            align: Reproject depth into the colour lens. Leave on unless a
-                measurement says the per-frame cost does not fit.
             retry_base: Seconds before the first retry; each failure
                 doubles the wait.
             retry_max: Ceiling for that delay, so recovery stays prompt
@@ -96,13 +99,10 @@ class RealSenseSource(FrameSource):
         self.fps = fps
         self.depth_width = depth_width
         self.depth_height = depth_height
-        self.align = align
 
         self._rs: Any = None  # the pyrealsense2 module, imported on start
         self._pipe: Any = None
-        self._aligner: Any = None
-        self._depth_scale = 0.0
-        self._intrinsics: Dict[str, float] = {}
+        self._calibration: Optional[Calibration] = None
 
     # -- the contract ------------------------------------------------------
 
@@ -150,28 +150,28 @@ class RealSenseSource(FrameSource):
         # resolution; a swapped camera applying the previous one's values
         # would place every detection at the wrong distance, silently.
         try:
-            self._depth_scale = (
-                profile.get_device().first_depth_sensor().get_depth_scale()
+            depth = profile.get_stream(rs.stream.depth).as_video_stream_profile()
+            colour = profile.get_stream(rs.stream.color).as_video_stream_profile()
+            calibration = Calibration(
+                depth_scale=float(
+                    profile.get_device().first_depth_sensor().get_depth_scale()
+                ),
+                depth=Intrinsics.from_sdk(depth.get_intrinsics()),
+                colour=Intrinsics.from_sdk(colour.get_intrinsics()),
+                colour_to_depth=Extrinsics.from_sdk(colour.get_extrinsics_to(depth)),
+                depth_to_colour=Extrinsics.from_sdk(depth.get_extrinsics_to(colour)),
             )
-            intr = (
-                profile.get_stream(rs.stream.color)
-                .as_video_stream_profile()
-                .get_intrinsics()
-            )
-            self._intrinsics = {
-                "fx": intr.fx,
-                "fy": intr.fy,
-                "cx": intr.ppx,
-                "cy": intr.ppy,
-            }
-        except RuntimeError as exc:
-            pipe.stop()
+        except (RuntimeError, ValueError) as exc:
+            # ValueError is a lens model this code cannot represent, which
+            # fails identically on every retry: fatal, like the SDK's own.
+            with contextlib.suppress(RuntimeError):
+                pipe.stop()
             self._fail(f"cannot read calibration: {exc}", fatal=True)
             return False
 
         with self._lock:
             self._pipe = pipe
-            self._aligner = rs.align(rs.stream.color) if self.align else None
+            self._calibration = calibration
         self._mark_running()
 
         self._worker = threading.Thread(
@@ -198,19 +198,14 @@ class RealSenseSource(FrameSource):
     # -- what only this source has -----------------------------------------
 
     @property
-    def depth_scale(self) -> float:
-        """Metres per depth unit, read from the device. 0.0 before start."""
-        return self._depth_scale
+    def calibration(self) -> Optional[Calibration]:
+        """The calibration of the camera last opened; None before start.
 
-    @property
-    def intrinsics(self) -> Dict[str, float]:
-        """Colour lens fx, fy, cx, cy in pixels. Empty before start.
-
-        The colour ones, not the depth ones: after alignment the depth map
-        is in the colour lens's frame, so these are what convert a detected
-        pixel plus a distance into metres.
+        For logging at startup. Code that reads distances takes it from the
+        frame instead, which cannot disagree with the depth map it came
+        with.
         """
-        return dict(self._intrinsics)
+        return self._calibration
 
     # -- internals ---------------------------------------------------------
 
@@ -257,14 +252,11 @@ class RealSenseSource(FrameSource):
         import numpy as np
 
         while not self._stopping.is_set():
-            pipe = self._pipe
+            pipe, calibration = self._pipe, self._calibration
             if pipe is None:
                 return
             try:
                 frames = pipe.wait_for_frames(timeout_ms=5000)
-                if self._aligner is not None:
-                    frames = self._aligner.process(frames)
-
                 colour_frame = frames.get_color_frame()
                 depth_frame = frames.get_depth_frame()
                 if not colour_frame:
@@ -277,16 +269,11 @@ class RealSenseSource(FrameSource):
                 # raise; it quietly contains a different frame's pixels.
                 image = np.asanyarray(colour_frame.get_data()).copy()
                 depth = (
-                    np.asanyarray(depth_frame.get_data()).copy()
-                    if depth_frame
+                    DepthMap(np.asanyarray(depth_frame.get_data()).copy(), calibration)
+                    if depth_frame and calibration is not None
                     else None
                 )
-
-                self.frames.put(
-                    image,
-                    depth=depth,
-                    depth_scale=self._depth_scale if depth is not None else 0.0,
-                )
+                self.frames.put(image, depth=depth)
                 self._check_rate()
             except RuntimeError as exc:
                 # Includes the timeout. Recoverable unless the message says

@@ -8,7 +8,10 @@ part -- is testable on a development machine.
 
 import threading
 import time
-from typing import Any, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional
+
+if TYPE_CHECKING:  # for annotations only; frames needs no numpy at import
+    from hazard_zone.projection import DepthMap
 
 
 class Frame(NamedTuple):
@@ -32,20 +35,19 @@ class Frame(NamedTuple):
             the sequence a consumer observes are the frames it missed.
         captured_at: Monotonic clock reading taken when the frame was
             published.
-        depth: Aligned depth map, (H, W) of uint16, or None when the source
-            has no depth sensor. None means "this camera cannot measure
-            distance", which is information: a consumer that needs metres
-            must say so rather than read zeros as "touching the lens".
-        depth_scale: Metres per depth unit, or 0.0 when there is no depth.
-            A depth value without this is a number with no units; carrying
-            it means a swapped camera cannot silently apply the wrong one.
+        depth: The depth map with its calibration, or None when the
+            source has no depth sensor. None means "this camera cannot
+            measure distance", which is information: a consumer that needs
+            metres must say so rather than read zeros as "touching the
+            lens". The calibration travels with every frame rather than
+            being read once from the source, so a camera swapped during a
+            reconnection cannot have the previous one's numbers applied.
     """
 
     image: Any
     seq: int
     captured_at: float
-    depth: Any = None
-    depth_scale: float = 0.0
+    depth: Optional["DepthMap"] = None
 
     def age(self, now: Optional[float] = None) -> float:
         """Seconds since this frame was captured."""
@@ -54,7 +56,7 @@ class Frame(NamedTuple):
     @property
     def has_depth(self) -> bool:
         """Whether this frame can answer a question in metres."""
-        return self.depth is not None and self.depth_scale > 0.0
+        return self.depth is not None
 
 
 class LatestFrame:
@@ -90,8 +92,7 @@ class LatestFrame:
         self,
         image: Any,
         captured_at: Optional[float] = None,
-        depth: Any = None,
-        depth_scale: float = 0.0,
+        depth: Optional["DepthMap"] = None,
     ) -> int:
         """Publish a frame, replacing any the consumer has not taken.
 
@@ -104,8 +105,8 @@ class LatestFrame:
             captured_at: Monotonic time of capture. Defaults to now; pass it
                 explicitly when the source reports its own timestamp, which
                 is more accurate than the moment this call happens to run.
-            depth: Aligned depth map, or None from a colour-only source.
-            depth_scale: Metres per depth unit, from the device.
+            depth: Depth map with its calibration, or None from a
+                colour-only source.
 
         Returns:
             The sequence number assigned to this frame.
@@ -119,7 +120,6 @@ class LatestFrame:
                 seq=self._seq,
                 captured_at=time.monotonic() if captured_at is None else captured_at,
                 depth=depth,
-                depth_scale=depth_scale,
             )
             self._ready.notify()
             return self._seq
