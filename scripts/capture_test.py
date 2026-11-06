@@ -13,10 +13,14 @@ lasts.
     python3 -m scripts.capture_test --seconds 15
     python3 -m scripts.capture_test --seconds 15 --consume-ms 40
     python3 -m scripts.capture_test --seconds 15 --raw-only
+    python3 -m scripts.capture_test --seconds 15 --realsense
 
 The --consume-ms option is the point of the exercise: it simulates a detector
 taking that long per frame. 40 ms is 25 fps, well under what the camera
 delivers, which is exactly the condition the design has to survive.
+--realsense runs the depth camera through its SDK backend instead of the
+GStreamer one, and also counts how many frames carried depth with its
+calibration.
 """
 
 import argparse
@@ -26,6 +30,7 @@ from hazard_zone.gst import GstSource
 from hazard_zone.negotiate import pick_format, select_node
 from hazard_zone.pipeline import build_pipeline
 from hazard_zone.probe import probe_video_nodes
+from hazard_zone.realsense import RealSenseSource
 from scripts.stats import percentile, summarise
 
 RULE = "=" * 72
@@ -87,13 +92,15 @@ def choose_mode(args):
 def run(source, seconds, consume_ms):
     """Consume frames for a while, recording latency and gaps.
 
-    Returns (latencies, gaps, frames) in milliseconds. Latency is measured
-    from the capture timestamp to the moment the consumer holds the frame;
-    the gap is between consecutive frames the consumer actually saw.
+    Returns (latencies, gaps, frames, with_depth); the first two in
+    milliseconds. Latency is measured from the capture timestamp to the
+    moment the consumer holds the frame; the gap is between consecutive
+    frames the consumer actually saw.
     """
     latencies = []
     gaps = []
     frames = 0
+    with_depth = 0
     budget = consume_ms / 1000.0
     deadline = time.monotonic() + seconds
     previous = None
@@ -112,6 +119,7 @@ def run(source, seconds, consume_ms):
             gaps.append((taken - previous) * 1000.0)
         previous = taken
         frames += 1
+        with_depth += frame.has_depth
 
         if budget:
             # A stand-in for inference. Sleeping, not spinning: the point is
@@ -119,10 +127,10 @@ def run(source, seconds, consume_ms):
             # what the capture thread gets scheduled.
             time.sleep(budget)
 
-    return latencies, gaps, frames
+    return latencies, gaps, frames, with_depth
 
 
-def report(args, source, latencies, gaps, frames, elapsed):
+def report(args, source, latencies, gaps, frames, with_depth, elapsed):
     """Print the measurement and say what it means.
 
     The verdict is spelled out because the numbers alone invite the wrong
@@ -148,6 +156,7 @@ def report(args, source, latencies, gaps, frames, elapsed):
             100.0 * stats["dropped"] / published if published else 0.0,
         )
     )
+    print(f"  with depth           {with_depth} of {frames} consumed")
     print(f"  reconnects           {state.reconnects}")
     if state.last_error:
         print(f"  last error           {state.last_error}")
@@ -209,17 +218,25 @@ def main() -> None:
     p.add_argument(
         "--accelerated", action="store_true", help="use the NVIDIA decode elements"
     )
+    p.add_argument(
+        "--realsense",
+        action="store_true",
+        help="use the depth camera's SDK backend instead of GStreamer",
+    )
     args = p.parse_args()
 
     print(RULE)
     print("CAPTURE TEST")
     print(RULE)
 
-    pipeline = choose_mode(args)
-    if pipeline is None:
-        return
+    if args.realsense:
+        source = RealSenseSource(args.width, args.height, int(args.fps))
+    else:
+        pipeline = choose_mode(args)
+        if pipeline is None:
+            return
+        source = GstSource(pipeline)
 
-    source = GstSource(pipeline)
     started = time.monotonic()
     if not source.start():
         state = source.state
@@ -227,6 +244,9 @@ def main() -> None:
         print("fatal (not worth retrying)" if state.fatal else "recoverable")
         return
     print(f"playing after {time.monotonic() - started:.2f} s")
+
+    if args.realsense:
+        print(f"calibration: {source.calibration}")
 
     if args.consume_ms:
         print(
@@ -236,16 +256,16 @@ def main() -> None:
 
     begin = time.monotonic()
     try:
-        latencies, gaps, frames = run(source, args.seconds, args.consume_ms)
+        latencies, gaps, frames, with_depth = run(source, args.seconds, args.consume_ms)
     except KeyboardInterrupt:
         print("\ninterrupted")
-        latencies, gaps, frames = [], [], 0
+        latencies, gaps, frames, with_depth = [], [], 0, 0
     elapsed = time.monotonic() - begin
 
     # Report before stopping: stop() closes the slot, and the counters have
     # to be read from the source that produced them.
     try:
-        report(args, source, latencies, gaps, frames, elapsed)
+        report(args, source, latencies, gaps, frames, with_depth, elapsed)
     finally:
         source.stop()
 
