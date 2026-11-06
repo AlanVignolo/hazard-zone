@@ -14,9 +14,10 @@ pipeline, and retries only the former.
 
 import threading
 import time
-from typing import TYPE_CHECKING, Any, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from hazard_zone.frames import LatestFrame
+from hazard_zone.source import FrameSource, SourceState
 
 if TYPE_CHECKING:  # imported for type checking only, never at runtime
     from hazard_zone.pipeline import Pipeline
@@ -43,47 +44,7 @@ GRACE_FRAMES = 45
 GRACE_SECONDS = 3.0
 
 
-class SourceState(NamedTuple):
-    """What the source is doing and why, read as one unit.
-
-    Exposed so the main loop can report system health over CAN without
-    reaching into the source's internals.
-
-    The two rates are separate on purpose. A camera that accepts 30 fps and
-    delivers 15 leaves everything downstream computing reaction times from a
-    number twice the truth, which in a hazard monitor is the difference
-    between warning before someone reaches the machine and warning after.
-    Carrying the measured rate makes the real figure available instead of
-    assumed.
-    """
-
-    running: bool
-    attempts: int
-    reconnects: int
-    last_error: str
-    fatal: bool
-    requested_fps: float = 0.0
-    measured_fps: float = 0.0
-
-    @property
-    def healthy(self) -> bool:
-        return self.running and not self.fatal
-
-    @property
-    def rate_ok(self) -> bool:
-        """Whether the camera is delivering close to the requested rate.
-
-        True when nothing was requested or nothing measured yet: an unknown
-        is not a fault. The 80% threshold tolerates the ordinary jitter of a
-        live source while catching a camera delivering half of what it
-        promised.
-        """
-        if not self.requested_fps or not self.measured_fps:
-            return True
-        return self.measured_fps >= 0.8 * self.requested_fps
-
-
-class GstSource:
+class GstSource(FrameSource):
     """Runs a pipeline and publishes frames into a LatestFrame.
 
     Frames arrive by callback in GStreamer's own streaming thread, which is

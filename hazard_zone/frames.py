@@ -18,21 +18,43 @@ class Frame(NamedTuple):
     measured against the moment of capture, and a reading that mixed one
     frame's image with another's timestamp would report a false latency.
 
+    Depth travels with the colour image for the same reason. A depth map
+    taken a frame later than the colour it is sampled against puts a moving
+    person at the wrong distance, and the error grows with their speed --
+    at 1.5 m/s one frame of skew is 5 cm, which is tolerable, but nothing
+    downstream could detect a larger skew if the two were held separately.
+    The SDK already delivers the pair time-aligned, so keeping them together
+    preserves a guarantee rather than inventing one.
+
     Attributes:
         image: The pixel data, typically an (H, W, 3) BGR array.
         seq: Monotonic counter of frames published, starting at 1. Gaps in
             the sequence a consumer observes are the frames it missed.
         captured_at: Monotonic clock reading taken when the frame was
             published.
+        depth: Aligned depth map, (H, W) of uint16, or None when the source
+            has no depth sensor. None means "this camera cannot measure
+            distance", which is information: a consumer that needs metres
+            must say so rather than read zeros as "touching the lens".
+        depth_scale: Metres per depth unit, or 0.0 when there is no depth.
+            A depth value without this is a number with no units; carrying
+            it means a swapped camera cannot silently apply the wrong one.
     """
 
     image: Any
     seq: int
     captured_at: float
+    depth: Any = None
+    depth_scale: float = 0.0
 
     def age(self, now: Optional[float] = None) -> float:
-        """Seconds since this frame was captures"""
+        """Seconds since this frame was captured."""
         return (time.monotonic() if now is None else now) - self.captured_at
+
+    @property
+    def has_depth(self) -> bool:
+        """Whether this frame can answer a question in metres."""
+        return self.depth is not None and self.depth_scale > 0.0
 
 
 class LatestFrame:
@@ -64,7 +86,13 @@ class LatestFrame:
         self._dropped = 0
         self._closed = False
 
-    def put(self, image: Any, captured_at: Optional[float] = None) -> int:
+    def put(
+        self,
+        image: Any,
+        captured_at: Optional[float] = None,
+        depth: Any = None,
+        depth_scale: float = 0.0,
+    ) -> int:
         """Publish a frame, replacing any the consumer has not taken.
 
         Called from the capture thread. Never blocks and never fails: the
@@ -76,6 +104,8 @@ class LatestFrame:
             captured_at: Monotonic time of capture. Defaults to now; pass it
                 explicitly when the source reports its own timestamp, which
                 is more accurate than the moment this call happens to run.
+            depth: Aligned depth map, or None from a colour-only source.
+            depth_scale: Metres per depth unit, from the device.
 
         Returns:
             The sequence number assigned to this frame.
@@ -88,6 +118,8 @@ class LatestFrame:
                 image=image,
                 seq=self._seq,
                 captured_at=time.monotonic() if captured_at is None else captured_at,
+                depth=depth,
+                depth_scale=depth_scale,
             )
             self._ready.notify()
             return self._seq
