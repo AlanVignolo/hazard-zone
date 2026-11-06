@@ -7,13 +7,14 @@ the device.
 """
 
 import pytest
+
 from hazard_zone.pipeline import (
-    COMPRESSED_INPUTS,
     DECODERS_HW,
     DECODERS_SW,
     MEDIA_TYPES,
     build_pipeline,
 )
+from hazard_zone.v4l2 import COLOUR_FOURCCS, COMPRESSED_FOURCCS
 
 # --------------------------------------------------------------------------
 # build_pipeline
@@ -231,12 +232,23 @@ def test_compressed_format_without_support_is_rejected():
 
 def test_every_compressed_input_either_works_or_raises():
     """No compressed format may silently take the raw path."""
-    for code in COMPRESSED_INPUTS:
+    for code in COMPRESSED_FOURCCS:
         try:
             launch = build_pipeline("/dev/video0", 640, 480, 30, code).launch
         except ValueError:
             continue  # explicit rejection is the acceptable outcome
         assert f"video/x-raw,format={code}" not in launch, code
+
+
+def test_every_colour_format_the_negotiator_accepts_can_be_built():
+    """Regression: NV16 was selectable but had no GStreamer name.
+
+    select_node accepts any fourcc in COLOUR_FOURCCS, so a camera offering
+    only NV16 was chosen and then rejected by build_pipeline, at startup on
+    the device, after negotiation had reported success.
+    """
+    for code in COLOUR_FOURCCS:
+        build_pipeline("/dev/video0", 640, 480, 30, code)
 
 
 # --- the reasoning that travels with the pipeline -------------------------

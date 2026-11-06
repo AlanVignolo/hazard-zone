@@ -150,11 +150,13 @@ def parse_v4l2_info(text: str) -> Tuple[str, str, int]:
     )
 
 
-# Formats that arrive encoded and therefore need a decoder element in the
-# GStreamer pipeline. Everything else is treated as raw.
+# Formats that arrive encoded and need a decoder before a detector can use
+# them. The one list for the whole project: ``pipeline`` reads it too, because
+# two copies had already drifted apart -- AV1 was compressed to one and raw
+# to the other.
 COMPRESSED_FOURCCS = frozenset(
-    {"MJPG", "JPEG", "H264", "H265", "HEVC", "VP8", "VP9"}
-)  # Compressed formats: immutable, O(1) lookup
+    {"MJPG", "JPEG", "H264", "H265", "HEVC", "VP8", "VP9", "AV1"}
+)
 
 # "	[0]: 'MJPG' (Motion-JPEG, compressed)"
 _FMT_RE = re.compile(r"^\s*\[\d+\]:\s*'([^']+)'")

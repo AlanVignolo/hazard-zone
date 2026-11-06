@@ -18,17 +18,10 @@ thresholds -- live in modules that need no device.
 
 import contextlib
 import threading
-import time
 from typing import Any, Dict, Optional
 
 from hazard_zone.frames import LatestFrame
-from hazard_zone.source import FrameSource, SourceState
-
-#: Frames and seconds to let pass before judging the delivered rate, for
-#: the same reason as in ``gst``: the camera's buffer empties in a burst at
-#: startup, so an average taken too early reads high.
-GRACE_FRAMES = 45
-GRACE_SECONDS = 3.0
+from hazard_zone.source import FrameSource
 
 #: SDK errors that retrying cannot fix. Everything else is treated as a
 #: camera that will come back, because on a machine-mounted system that is
@@ -97,15 +90,13 @@ class RealSenseSource(FrameSource):
             retry_max: Ceiling for that delay, so recovery stays prompt
                 after a long outage.
         """
+        super().__init__(fps, slot, retry_base, retry_max)
         self.width = width
         self.height = height
         self.fps = fps
         self.depth_width = depth_width
         self.depth_height = depth_height
-        self.frames = slot if slot is not None else LatestFrame()
         self.align = align
-        self._retry_base = retry_base
-        self._retry_max = retry_max
 
         self._rs: Any = None  # the pyrealsense2 module, imported on start
         self._pipe: Any = None
@@ -113,24 +104,13 @@ class RealSenseSource(FrameSource):
         self._depth_scale = 0.0
         self._intrinsics: Dict[str, float] = {}
 
-        self._thread: Optional[threading.Thread] = None
-        self._lock = threading.Lock()
-        self._stopping = threading.Event()
-        self._running = False
-        self._attempts = 0
-        self._reconnects = 0
-        self._last_error = ""
-        self._fatal = False
-        self._started_at = 0.0
-        self._rate_warned = False
-
     # -- the contract ------------------------------------------------------
 
     @property
     def has_depth(self) -> bool:
         return True
 
-    def start(self, timeout: float = 10.0) -> bool:
+    def _open(self, timeout: float) -> bool:
         """Open the camera and start the capture thread.
 
         The SDK's own start is synchronous -- it raises if the requested
@@ -145,10 +125,6 @@ class RealSenseSource(FrameSource):
         rs = self._import_rs()
         if rs is None:
             return False
-
-        with self._lock:
-            self._stopping.clear()
-            self._attempts += 1
 
         config = rs.config()
         config.enable_stream(
@@ -196,15 +172,12 @@ class RealSenseSource(FrameSource):
         with self._lock:
             self._pipe = pipe
             self._aligner = rs.align(rs.stream.color) if self.align else None
-            self._started_at = time.monotonic()
-            self._rate_warned = False
-            self._last_error = ""
-            self._running = True
+        self._mark_running()
 
-        self._thread = threading.Thread(
+        self._worker = threading.Thread(
             target=self._capture, name="realsense", daemon=True
         )
-        self._thread.start()
+        self._worker.start()
 
         # A camera that opens and delivers nothing is a real failure mode --
         # measured here, requesting colour and depth both at 720p starts
@@ -212,7 +185,7 @@ class RealSenseSource(FrameSource):
         # one is what separates the two cases.
         waited = 0.0
         while waited < timeout:
-            if self.frames.published > 0:
+            if self._published_since_start() > 0:
                 return True
             if not self._running:
                 return False
@@ -221,63 +194,6 @@ class RealSenseSource(FrameSource):
         self._fail(f"no frame within {timeout:g} s of starting", fatal=False)
         self._release()
         return False
-
-    def stop(self) -> None:
-        """Release the camera and close the frame slot.
-
-        Closing the slot wakes a consumer blocked waiting for a frame.
-        Without it that thread would wait for something never coming, and
-        the process would not exit.
-        """
-        self._stopping.set()
-        self._release()
-        self.frames.close()
-        thread, self._thread = self._thread, None
-        if thread is not None:
-            thread.join(2.0)
-
-    def run_forever(self, poll: float = 0.5) -> None:
-        """Keep the camera alive, reconnecting after recoverable faults.
-
-        Same policy as the GStreamer path, for the same reason: a camera
-        being unplugged is an ordinary event for a machine-mounted system,
-        so the delay grows after each failure rather than probing a missing
-        device continuously. Configuration errors end the loop, because
-        they fail identically every time.
-        """
-        delay = self._retry_base
-        while not self._stopping.is_set():
-            if self.start():
-                delay = self._retry_base
-                while not self._stopping.is_set() and self.state.running:
-                    self._stopping.wait(poll)
-            if self._stopping.is_set() or self.state.fatal:
-                break
-            # Release but leave the slot open: a reconnection publishes into
-            # the same slot, and the consumer must not have to restart
-            # because the camera was briefly unplugged.
-            self._release()
-            with self._lock:
-                self._reconnects += 1
-            self._stopping.wait(delay)
-            delay = min(delay * 2.0, self._retry_max)
-        self.stop()
-
-    @property
-    def state(self) -> SourceState:
-        """Current state, read atomically."""
-        with self._lock:
-            elapsed = time.monotonic() - self._started_at if self._started_at else 0.0
-            published = self.frames.published
-            return SourceState(
-                running=self._running,
-                attempts=self._attempts,
-                reconnects=self._reconnects,
-                last_error=self._last_error,
-                fatal=self._fatal,
-                requested_fps=float(self.fps),
-                measured_fps=published / elapsed if elapsed > 0 else 0.0,
-            )
 
     # -- what only this source has -----------------------------------------
 
@@ -317,13 +233,6 @@ class RealSenseSource(FrameSource):
 
     def _is_fatal(self, message: str) -> bool:
         return any(f in message for f in FATAL_ERRORS)
-
-    def _fail(self, message: str, fatal: bool) -> None:
-        with self._lock:
-            self._running = False
-            self._last_error = message
-            if fatal:
-                self._fatal = True
 
     def _release(self) -> None:
         """Tear the camera down without closing the frame slot."""
@@ -387,32 +296,3 @@ class RealSenseSource(FrameSource):
             except Exception as exc:
                 self._fail(f"capture thread failed: {exc}", fatal=False)
                 return
-
-    def _check_rate(self) -> None:
-        """Compare the delivered rate against the requested one, once.
-
-        The check cannot happen at startup: the SDK accepts the rate and
-        starts, and a shortfall only exists over time. GRACE_FRAMES exists
-        because the first frames arrive from the camera's buffer in a
-        burst, which makes an early average meaningless.
-
-        This warns and does not fail. A hazard zone watched at 15 fps is
-        worse than at 30 and far better than one not watched at all.
-        """
-        if self._rate_warned:
-            return
-        elapsed = time.monotonic() - self._started_at
-        published = self.frames.published
-        if published < GRACE_FRAMES or elapsed < GRACE_SECONDS:
-            return
-
-        measured = published / elapsed
-        self._rate_warned = True
-        if measured < 0.8 * self.fps:
-            print(
-                f"WARNING: camera delivers {measured:.1f} fps, "
-                f"{self.fps:g} was requested "
-                f"({100.0 * measured / self.fps:.0f}% of it). "
-                "The system keeps running at the real rate; "
-                "anything computing from the requested rate is wrong."
-            )

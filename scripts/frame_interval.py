@@ -22,7 +22,7 @@ is ours, not the camera's. That is a different problem with a different fix.
 
 Run on the device, with the camera attached:
 
-    python3 scripts/frame_interval.py --seconds 20
+    python3 -m scripts.frame_interval --seconds 20
 """
 
 import argparse
@@ -30,28 +30,7 @@ import sys
 import time
 from typing import List, Optional
 
-
-def percentile(values: List[float], fraction: float) -> float:
-    """Nearest-rank percentile, without numpy."""
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    index = min(len(ordered) - 1, max(0, int(round(fraction * (len(ordered) - 1)))))
-    return ordered[index]
-
-
-def summarise(name: str, values: List[float]) -> None:
-    """Print min, median, p95 and max. Never the mean: it hides the tail."""
-    if not values:
-        print(f"{name:18s} no samples")
-        return
-    print(
-        f"{name:18s} n={len(values):4d}  "
-        f"min={min(values):7.2f}  "
-        f"median={percentile(values, 0.50):7.2f}  "
-        f"p95={percentile(values, 0.95):7.2f}  "
-        f"max={max(values):7.2f}   ms"
-    )
+from scripts.stats import percentile, summarise
 
 
 def histogram(values: List[float], edges: List[float]) -> None:

@@ -15,7 +15,7 @@ only the few detected points should be projected instead.
 
 Run on the device, with the camera attached:
 
-    python3 scripts/align_cost.py --seconds 20
+    python3 -m scripts.align_cost --seconds 20
 """
 
 import argparse
@@ -23,37 +23,7 @@ import sys
 import time
 from typing import List, Optional, Tuple
 
-
-def percentile(values: List[float], fraction: float) -> float:
-    """Nearest-rank percentile, without numpy.
-
-    Hand-written so this script runs before numpy is a dependency of
-    anything, and so the definition is visible rather than assumed.
-    """
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    index = min(len(ordered) - 1, max(0, int(round(fraction * (len(ordered) - 1)))))
-    return ordered[index]
-
-
-def summarise(name: str, values: List[float]) -> None:
-    """Print min, median, p95 and max.
-
-    Never the mean. The mean hides the tail, and the tail is what a safety
-    system misses on: a frame that took 40 ms is a frame the zone was not
-    watched for 40 ms, and an average of 6 ms says nothing about it.
-    """
-    if not values:
-        print(f"{name:14s} no samples")
-        return
-    print(
-        f"{name:14s} n={len(values):4d}  "
-        f"min={min(values):6.2f}  "
-        f"median={percentile(values, 0.50):6.2f}  "
-        f"p95={percentile(values, 0.95):6.2f}  "
-        f"max={max(values):6.2f}   ms"
-    )
+from scripts.stats import percentile, summarise
 
 
 def run(

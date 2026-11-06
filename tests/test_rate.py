@@ -10,8 +10,8 @@ NamedTuple, so rate_ok can be checked without a camera, which is the point
 of keeping the decision out of the hardware layer.
 """
 
-from hazard_zone.gst import SourceState
 from hazard_zone.pipeline import build_pipeline
+from hazard_zone.source import SourceState
 
 
 def state(requested, measured):

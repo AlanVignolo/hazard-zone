@@ -26,35 +26,9 @@ from hazard_zone.gst import GstSource
 from hazard_zone.negotiate import pick_format, select_node
 from hazard_zone.pipeline import build_pipeline
 from hazard_zone.probe import probe_video_nodes
+from scripts.stats import percentile, summarise
 
 RULE = "=" * 72
-
-
-def percentile(values, fraction):
-    """Value below which ``fraction`` of a sorted sample falls.
-
-    Written out rather than imported: statistics.quantiles needs 3.8+ and
-    numpy would be a dependency for six lines. Nearest-rank, no interpolation
-    -- these are milliseconds, and the difference never matters here.
-    """
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    index = int(round(fraction * (len(ordered) - 1)))
-    return ordered[index]
-
-
-def summarise(name, values):
-    """Print the shape of a sample, not just its mean.
-
-    The mean hides the tail, and the tail is what a safety system misses on.
-    """
-    if not values:
-        print(f"  {name:<22} no samples")
-        return
-    print(
-        f"  {name:<22} min {min(values):6.1f}  median {percentile(values, 0.50):6.1f}  p95 {percentile(values, 0.95):6.1f}  max {max(values):6.1f}  ms"
-    )
 
 
 def choose_mode(args):

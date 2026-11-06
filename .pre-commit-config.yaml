@@ -17,8 +17,11 @@ repos:
         args: ["--maxkb=2048"]
       - id: check-merge-conflict
 
+  # Same version as the dev dependency, so the hook and a local
+  # `ruff format` agree; when they differ, the hook reformats a commit that
+  # was already formatted and the commit is blocked.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.6
+    rev: v0.17.1
     hooks:
       - id: ruff
         args: [--fix]

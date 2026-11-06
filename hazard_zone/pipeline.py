@@ -11,6 +11,8 @@ Which decode path to use was measured rather than assumed; see build_pipeline.
 
 from typing import NamedTuple
 
+from hazard_zone.v4l2 import COMPRESSED_FOURCCS
+
 #: GStreamer elements that decode a compressed stream, by fourcc, for the
 #: software path. The hardware equivalents are in DECODERS_HW.
 DECODERS_SW = {
@@ -53,6 +55,7 @@ RAW_FORMATS = {
     # Planar and semi-planar YUV. The names agree except for one.
     "NV12": "NV12",
     "NV21": "NV21",
+    "NV16": "NV16",
     "YU12": "I420",
     "YV12": "YV12",
     # Packed RGB. V4L2 appends the byte count, GStreamer does not.
@@ -77,14 +80,6 @@ MEDIA_TYPES = {
     "H265": "video/x-h265",
     "HEVC": "video/x-h265",
 }
-
-#: Fourccs that arrive encoded. Listing a format here without adding it to
-#: MEDIA_TYPES and both decoder tables makes build_pipeline raise, which is
-#: the intent: an unsupported compressed format must fail loudly rather than
-#: be treated as raw and produce a pipeline that cannot negotiate.
-COMPRESSED_INPUTS = frozenset(
-    {"MJPG", "JPEG", "H264", "H265", "HEVC", "VP8", "VP9", "AV1"}
-)
 
 
 class Pipeline(NamedTuple):
@@ -182,7 +177,11 @@ def build_pipeline(
             no decoder for the chosen path.
     """
     code = fourcc.strip().upper()
-    compressed = code in COMPRESSED_INPUTS
+    # A compressed fourcc missing from MEDIA_TYPES or a decoder table makes
+    # this raise, which is the intent: an unsupported compressed format must
+    # fail loudly rather than be treated as raw and produce a pipeline that
+    # cannot negotiate.
+    compressed = code in COMPRESSED_FOURCCS
     parts = []
 
     # --- source -----------------------------------------------------------
@@ -213,7 +212,7 @@ def build_pipeline(
         # pipeline replays any container the platform can read.
         parts.append(f"filesrc location={device}")
         parts.append("decodebin")
-        compressed = False  # decodebin has already decode it
+        compressed = False  # decodebin has already decoded it
     elif source == "rtsp":
         parts.append(f"rtspsrc location={device} latency=0")
         parts.append("rtph264depay")
