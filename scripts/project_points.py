@@ -1,56 +1,68 @@
-"""Measure projecting a few colour pixels into depth, instead of aligning.
+"""Measure carrying detected points into depth, instead of aligning.
 
 Option B of the alignment decision: rather than reprojecting the whole
 depth map into the colour lens every frame -- measured at 8 ms of CPU and
-15 ms of loop -- project only the pixels the detector reports, with
-calibration read once at start. This checks the four things that would
-make B the wrong choice, with the thresholds fixed before measuring and
-judged at p95, not the median:
+15 ms of loop -- carry only the pixels the detector reports, with
+calibration read once at start. The search is ``hazard_zone.projection``,
+written by hand because the SDK's binding accepts only its own frame
+memory, not an array.
 
-  1. cost: five points under 1 ms per frame
-  2. round trip: colour -> depth -> colour lands within 2 px of the start
-  3. agreement: the distance is within 2 % of what rs.align reports
-  4. binding: the projection accepts a numpy array, which is all a frame
-     carries once the capture thread has copied it
+Thresholds fixed before measuring, judged at p95:
 
-rs.align still runs here, but only as the reference for 3, and outside
-the timed section.
+  1. agreement with the SDK's own search: within 1 depth pixel
+  2. residual: within 2 colour pixels (the grid alone allows 1.7)
+  3. distance: within 2 % of rs.align, near and far separately
+  4. cost: five points in under 1 ms per frame
 
-Run on the device, with the camera attached, pointing at surfaces between
-1 and 4 m away:
+1 is the one that catches a wrong calibration. A swapped pair of
+extrinsics is wrong consistently, so 2 looks fine while the pixel is a
+dozen off; only an independent implementation shows it. The SDK search
+and rs.align run here as references only, outside the timed section.
+
+Run on the device, with the camera attached. Aim at a scene with depth
+edges -- a person or a box in front of a wall -- with surfaces both nearer
+and farther than 2.5 m: on a flat wall every pixel reads the same distance,
+and a wrong pixel cannot show in 3.
 
     python3 -m scripts.project_points --seconds 20
 """
 
 import argparse
+import math
 import sys
 import time
-from typing import Any, List, Optional, Tuple
+from collections import Counter
+from typing import Any, List, Optional
 
+from hazard_zone.projection import (
+    Calibration,
+    Extrinsics,
+    Intrinsics,
+    colours_to_depth,
+)
 from scripts.stats import percentile, summarise
 
 #: Colour pixels standing in for detections: the centre and four around it.
 POINTS = ((640, 360), (320, 360), (960, 360), (640, 180), (640, 540))
 
-#: Range the projection searches along, in metres. The camera's useful
-#: range sits inside it; a wider one only makes the search slower.
+#: Search range in metres, the same for both implementations.
 DEPTH_MIN = 0.1
 DEPTH_MAX = 10.0
 
+SDK_LIMIT_PX = 1.0
+RESIDUAL_LIMIT_PX = 2.0
+ALIGN_LIMIT_PCT = 2.0
 COST_LIMIT_MS = 1.0
-ROUND_TRIP_LIMIT_PX = 2.0
-AGREEMENT_LIMIT_PCT = 2.0
 
-#: Distance that splits "near" from "far" in the report, so a result that
-#: holds at 1 m but not at 4 m is visible rather than averaged away.
+#: Splits "near" from "far" in the report, so a result that holds at 1 m
+#: but not at 4 m is visible rather than averaged away.
 NEAR_FAR_SPLIT_M = 2.5
 
 
-def depth_at(depth: Any, x: float, y: float, scale: float) -> float:
-    """Median of the 3x3 around (x, y), in metres; 0.0 if nothing valid.
+def median_depth(depth: Any, x: float, y: float, scale: float) -> float:
+    """Median of the 3x3 around (x, y) in metres, zeros dropped; 0.0 if none.
 
-    Zeros are dropped: zero is the sensor saying it does not know, not a
-    distance, and averaging it in pulls the reading toward the lens.
+    Used for the rs.align reference only, where single pixels have holes.
     """
     import numpy as np
 
@@ -61,15 +73,6 @@ def depth_at(depth: Any, x: float, y: float, scale: float) -> float:
     patch = depth[yi - 1 : yi + 2, xi - 1 : xi + 2]
     valid = patch[patch > 0]
     return float(np.median(valid)) * scale if valid.size else 0.0
-
-
-def accepts_numpy(rs: Any, depth: Any, args: tuple) -> Tuple[bool, str]:
-    """Whether the projection takes a plain array instead of SDK memory."""
-    try:
-        rs.rs2_project_color_pixel_to_depth_pixel(depth, *args)
-    except TypeError as exc:
-        return False, str(exc)
-    return True, ""
 
 
 def run(seconds: float, fps: int) -> Optional[dict]:
@@ -87,21 +90,23 @@ def run(seconds: float, fps: int) -> Optional[dict]:
     profile = pipe.start(config)
 
     costs: List[float] = []
-    # (distance in metres, round-trip px, disagreement % or None)
-    samples: List[Tuple[float, float, Optional[float]]] = []
-    missed = 0
-    numpy_ok: Optional[bool] = None
-    numpy_error = ""
+    near: dict = {"sdk": [], "residual": [], "align": []}
+    far: dict = {"sdk": [], "residual": [], "align": []}
+    refused: Counter = Counter()
 
     try:
-        # Everything B needs, read once. These are plain numbers: they can
-        # be copied into a frame and outlive the SDK objects.
-        scale = profile.get_device().first_depth_sensor().get_depth_scale()
         dprof = profile.get_stream(rs.stream.depth).as_video_stream_profile()
         cprof = profile.get_stream(rs.stream.color).as_video_stream_profile()
-        d_intr, c_intr = dprof.get_intrinsics(), cprof.get_intrinsics()
-        d_to_c = dprof.get_extrinsics_to(cprof)
-        c_to_d = cprof.get_extrinsics_to(dprof)
+        sdk_c_to_d = cprof.get_extrinsics_to(dprof)
+        sdk_d_to_c = dprof.get_extrinsics_to(cprof)
+        calib = Calibration(
+            depth_scale=profile.get_device().first_depth_sensor().get_depth_scale(),
+            depth=Intrinsics.from_sdk(dprof.get_intrinsics()),
+            colour=Intrinsics.from_sdk(cprof.get_intrinsics()),
+            colour_to_depth=Extrinsics.from_sdk(sdk_c_to_d),
+            depth_to_colour=Extrinsics.from_sdk(sdk_d_to_c),
+        )
+        print(calib)
         aligner = rs.align(rs.stream.color)
 
         deadline = time.monotonic() + seconds
@@ -112,74 +117,54 @@ def run(seconds: float, fps: int) -> Optional[dict]:
                 continue
             depth = np.asanyarray(depth_frame.get_data()).copy()
 
-            if numpy_ok is None:
-                probe_args = (
-                    scale,
-                    DEPTH_MIN,
-                    DEPTH_MAX,
-                    d_intr,
-                    c_intr,
-                    c_to_d,
-                    d_to_c,
-                    [float(POINTS[0][0]), float(POINTS[0][1])],
-                )
-                numpy_ok, numpy_error = accepts_numpy(rs, depth, probe_args)
-            # If the binding refuses numpy, measure with SDK memory anyway,
-            # so the other three numbers still come out of this run.
-            source = depth if numpy_ok else depth_frame.get_data()
-
             # -- B, timed: what the system would do per frame -------------
             start = time.perf_counter()
-            found = []
-            for cx, cy in POINTS:
-                dx, dy = rs.rs2_project_color_pixel_to_depth_pixel(
-                    source,
-                    scale,
-                    DEPTH_MIN,
-                    DEPTH_MAX,
-                    d_intr,
-                    c_intr,
-                    d_to_c,
-                    c_to_d,
-                    [float(cx), float(cy)],
-                )
-                z = depth_at(depth, dx, dy, scale)
-                if z <= 0.0:
-                    found.append(None)
-                    continue
-                in_depth = rs.rs2_deproject_pixel_to_point(d_intr, [dx, dy], z)
-                found.append(rs.rs2_transform_point_to_point(d_to_c, in_depth))
+            # No residual limit: every match is kept, so the residual's
+            # distribution is measured rather than cut off.
+            matches = colours_to_depth(
+                depth, calib, POINTS, DEPTH_MIN, DEPTH_MAX, max_error_px=math.inf
+            )
             costs.append((time.perf_counter() - start) * 1000.0)
 
-            # -- checking, not part of B's cost ---------------------------
+            # -- references, not part of B's cost -------------------------
             aligned = np.asanyarray(
                 aligner.process(frames).get_depth_frame().get_data()
             )
-            for (cx, cy), point in zip(POINTS, found):
-                if point is None:
-                    missed += 1
+            for (u, v), match in zip(POINTS, matches):
+                if not match.ok:
+                    refused[match.reason] += 1
                     continue
-                u, v = rs.rs2_project_point_to_pixel(c_intr, point)
-                trip = ((u - cx) ** 2 + (v - cy) ** 2) ** 0.5
-                # point[2] is the distance along the colour lens's axis,
-                # which is what the aligned map stores at (cx, cy).
-                reference = depth_at(aligned, cx, cy, scale)
-                diff = (
-                    100.0 * abs(point[2] - reference) / reference
-                    if reference > 0.0
-                    else None
+                bucket = near if match.point[2] < NEAR_FAR_SPLIT_M else far
+
+                # The SDK takes these positionally, in this order:
+                # colour_to_depth first, then depth_to_colour.
+                sx, sy = rs.rs2_project_color_pixel_to_depth_pixel(
+                    depth_frame.get_data(),
+                    calib.depth_scale,
+                    DEPTH_MIN,
+                    DEPTH_MAX,
+                    dprof.get_intrinsics(),
+                    cprof.get_intrinsics(),
+                    sdk_c_to_d,
+                    sdk_d_to_c,
+                    [float(u), float(v)],
                 )
-                samples.append((point[2], trip, diff))
+                bucket["sdk"].append(
+                    math.hypot(match.pixel[0] - sx, match.pixel[1] - sy)
+                )
+                bucket["residual"].append(match.error_px)
+
+                # point[2] is the distance along the colour lens's axis,
+                # which is what the aligned map stores at (u, v).
+                reference = median_depth(aligned, u, v, calib.depth_scale)
+                if reference > 0.0:
+                    bucket["align"].append(
+                        100.0 * abs(match.point[2] - reference) / reference
+                    )
     finally:
         pipe.stop()
 
-    return {
-        "costs": costs,
-        "samples": samples,
-        "missed": missed,
-        "numpy_ok": numpy_ok,
-        "numpy_error": numpy_error,
-    }
+    return {"costs": costs, "near": near, "far": far, "refused": refused}
 
 
 def show(name: str, values: List[float], unit: str) -> None:
@@ -194,49 +179,46 @@ def show(name: str, values: List[float], unit: str) -> None:
     )
 
 
-def verdict(name: str, value: float, limit: float, unit: str) -> bool:
-    ok = value <= limit
-    mark = "ok  " if ok else "FAIL"
+def verdict(name: str, values: List[float], limit: float, unit: str) -> bool:
+    if not values:
+        print(f"  [----] {name}: no samples")
+        return False
+    value = percentile(values, 0.95)
+    mark = "ok  " if value <= limit else "FAIL"
     print(f"  [{mark}] {name}: p95 {value:.2f} {unit} (limit {limit:g})")
-    return ok
+    return value <= limit
 
 
 def report(result: dict) -> bool:
-    samples = result["samples"]
-    near = [s for s in samples if s[0] < NEAR_FAR_SPLIT_M]
-    far = [s for s in samples if s[0] >= NEAR_FAR_SPLIT_M]
-    trips = [s[1] for s in samples]
-    diffs = [s[2] for s in samples if s[2] is not None]
-    total = len(samples) + result["missed"]
+    near, far = result["near"], result["far"]
+    split = f"{NEAR_FAR_SPLIT_M:g} m"
 
     print("\nCOST (5 points per frame)")
     summarise("B per frame", result["costs"])
 
-    print("\nROUND TRIP colour -> depth -> colour")
-    show(f"near (<{NEAR_FAR_SPLIT_M:g} m)", [s[1] for s in near], "px")
-    show(f"far (>={NEAR_FAR_SPLIT_M:g} m)", [s[1] for s in far], "px")
+    for key, title, unit in (
+        ("sdk", "PIXEL vs the SDK's search", "px"),
+        ("residual", "RESIDUAL in colour", "px"),
+        ("align", "DISTANCE vs rs.align", "%"),
+    ):
+        print(f"\n{title}")
+        show(f"near (<{split})", near[key], unit)
+        show(f"far (>={split})", far[key], unit)
 
-    print("\nDISTANCE vs rs.align")
-    show("near", [s[2] for s in near if s[2] is not None], "%")
-    show("far", [s[2] for s in far if s[2] is not None], "%")
+    if result["refused"]:
+        print("\nrefused:")
+        for reason, count in result["refused"].most_common():
+            print(f"  {count:6d}  {reason}")
 
-    print(f"\npoints without a valid depth: {result['missed']} of {total}")
-
+    both = {k: near[k] + far[k] for k in near}
     print("\nVERDICT")
-    if result["numpy_ok"]:
-        print("  [ok  ] binding accepts a numpy array")
-        binding = True
-    else:
-        print(f"  [FAIL] binding refuses numpy: {result['numpy_error']}")
-        binding = False
     checks = [
-        binding,
-        verdict("cost", percentile(result["costs"], 0.95), COST_LIMIT_MS, "ms"),
-        verdict("round trip", percentile(trips, 0.95), ROUND_TRIP_LIMIT_PX, "px"),
-        verdict("vs align", percentile(diffs, 0.95), AGREEMENT_LIMIT_PCT, "%"),
+        verdict("vs SDK", both["sdk"], SDK_LIMIT_PX, "px"),
+        verdict("residual", both["residual"], RESIDUAL_LIMIT_PX, "px"),
+        verdict("vs align, near", near["align"], ALIGN_LIMIT_PCT, "%"),
+        verdict("vs align, far", far["align"], ALIGN_LIMIT_PCT, "%"),
+        verdict("cost", result["costs"], COST_LIMIT_MS, "ms"),
     ]
-    if not far:
-        print("  note: nothing beyond the split; aim at something farther away")
     return all(checks)
 
 
