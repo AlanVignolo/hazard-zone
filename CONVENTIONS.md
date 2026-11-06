@@ -51,11 +51,15 @@ rather than `<CameraFormat object at 0x7f8b2c>`.
 options returns what it chose, what it rejected, and why:
 
 ```python
-NodeChoice(node=..., reason="camera offers 1920x1080 at 30 fps", rejected=(
-    ("/dev/video1", "metadata node, not video capture"),
-    ("/dev/video2", "no colour format (Z16 )"),
-    ("/dev/video6", "ties at 1920x1080 but offers no compressed mode"),
-))
+NodeChoice(
+    node=...,
+    reason="camera offers 1920x1080 at 30 fps",
+    rejected=(
+        ("/dev/video1", "metadata node, not video capture"),
+        ("/dev/video2", "no colour format (Z16 )"),
+        ("/dev/video6", "ties at 1920x1080 but offers no compressed mode"),
+    ),
+)
 ```
 
 `None` would say the same amount about *what* and nothing about *why*. In the
