@@ -218,89 +218,140 @@ class Clock:
         return self.now
 
 
-def test_measured_rate_is_frames_over_time_since_start():
-    clock = Clock()
-    source = FakeSource(["ok"], clock=clock)
-    source.start()
-    for _ in range(30):
+def deliver(source, clock, fps, seconds):
+    """Publish frames at a steady rate, checking it after each one.
+
+    The same call order as a real backend: publish, then check.
+    """
+    for _ in range(int(round(fps * seconds))):
+        clock.now += 1.0 / fps
         source.frames.put("x")
-    clock.now += 2.0
-    assert source.state.measured_fps == pytest.approx(15.0)
+        source._check_rate()
+
+
+def burst(source, frames):
+    """Frames that were waiting in the camera's buffer: no time passes."""
+    for _ in range(frames):
+        source.frames.put("x")
+        source._check_rate()
+
+
+def started(clock):
+    source = FakeSource(["ok", "ok"], clock=clock)
+    source.start()
+    return source
 
 
 def test_requested_rate_is_reported_alongside():
     assert FakeSource([]).state.requested_fps == 30.0
 
 
+def test_measured_rate_is_unknown_until_the_window_has_run():
+    """Unknown reads as 0.0, which SourceState treats as no fault."""
+    clock = Clock()
+    source = started(clock)
+    deliver(source, clock, fps=30, seconds=4.0)
+    assert source.state.measured_fps == 0.0
+    assert source.state.rate_ok
+
+
+def test_measured_rate_after_the_window():
+    clock = Clock()
+    source = started(clock)
+    deliver(source, clock, fps=30, seconds=6.0)
+    assert source.state.measured_fps == pytest.approx(30.0)
+
+
 def test_a_shortfall_warns_once_and_carries_the_number(capsys):
     clock = Clock()
-    source = FakeSource(["ok"], clock=clock)
-    source.start()
-    for _ in range(45):
-        source.frames.put("x")
-    clock.now += 3.0
-    source._check_rate()
-    source._check_rate()
+    source = started(clock)
+    deliver(source, clock, fps=15, seconds=10.0)
     out = capsys.readouterr().out
     assert out.count("WARNING") == 1
     assert "15.0" in out
 
 
 def test_no_judgement_inside_the_grace_period(capsys):
-    """The startup burst makes an early average meaningless."""
     clock = Clock()
-    source = FakeSource(["ok"], clock=clock)
-    source.start()
-    for _ in range(10):
-        source.frames.put("x")
-    clock.now += 3.0
-    source._check_rate()
+    source = started(clock)
+    deliver(source, clock, fps=15, seconds=2.9)
     assert capsys.readouterr().out == ""
+
+
+def test_a_rate_at_the_request_does_not_warn(capsys):
+    clock = Clock()
+    source = started(clock)
+    deliver(source, clock, fps=30, seconds=10.0)
+    assert capsys.readouterr().out == ""
+
+
+# -- regression: a slow first frame read as a slow camera -------------------
+
+
+def test_a_slow_first_frame_does_not_read_as_a_slow_camera(capsys):
+    """Measured: a camera at 30 fps was reported at 23.9, and warned about.
+
+    Its first frame took 1.3 s to arrive, and the rate was counted from the
+    moment the device opened, so that wait was averaged in.
+    """
+    clock = Clock()
+    source = started(clock)
+    clock.now += 1.3
+    deliver(source, clock, fps=30, seconds=10.0)
+    assert capsys.readouterr().out == ""
+    assert source.state.measured_fps == pytest.approx(30.0)
+
+
+def test_a_startup_burst_does_not_hide_a_slow_camera(capsys):
+    """The opposite error: buffered frames at once, then a camera at 15 fps."""
+    clock = Clock()
+    source = started(clock)
+    burst(source, 30)
+    deliver(source, clock, fps=15, seconds=10.0)
+    assert "15.0" in capsys.readouterr().out
+    assert source.state.measured_fps == pytest.approx(15.0)
 
 
 # -- regression: rate counted frames from before a reconnection -------------
 
 
-def reconnected(clock, frames_before, frames_after, seconds_after):
-    """A source that ran, lost the camera, and opened it again."""
-    source = FakeSource(["ok", "ok"], clock=clock)
+def reconnected(clock):
+    """A source that ran a minute at 30 fps, lost the camera, and reopened."""
+    source = started(clock)
+    deliver(source, clock, fps=30, seconds=60.0)
+    clock.now += 5.0
     source.start()
-    for _ in range(frames_before):
-        source.frames.put("x")
-    clock.now += 60.0
-    source.start()
-    for _ in range(frames_after):
-        source.frames.put("x")
-    clock.now += seconds_after
     return source
 
 
 def test_rate_after_reconnect_counts_only_this_connection():
-    """Measured before the fix: 1800 old frames over 3 s read as 615 fps."""
-    source = reconnected(Clock(), frames_before=1800, frames_after=45, seconds_after=3)
+    clock = Clock()
+    source = reconnected(clock)
+    deliver(source, clock, fps=15, seconds=10.0)
     assert source.state.measured_fps == pytest.approx(15.0)
 
 
 def test_shortfall_after_reconnect_still_warns(capsys):
     """The old count read high, so a camera back at half rate went unreported."""
-    source = reconnected(Clock(), frames_before=1800, frames_after=45, seconds_after=3)
-    source._check_rate()
+    clock = Clock()
+    source = reconnected(clock)
+    capsys.readouterr()
+    deliver(source, clock, fps=15, seconds=10.0)
     assert "15.0" in capsys.readouterr().out
 
 
 def test_grace_period_restarts_on_reconnect(capsys):
-    """Old frames must not count toward the sample needed to judge.
-
-    Before the fix, 40 old frames plus 10 new ones passed the 45-frame
-    grace and were judged as 16.7 fps from three seconds of a new
-    connection.
-    """
-    source = reconnected(Clock(), frames_before=40, frames_after=10, seconds_after=3)
-    source._check_rate()
+    """Old frames must not count toward the sample needed to judge."""
+    clock = Clock()
+    source = reconnected(clock)
+    capsys.readouterr()
+    deliver(source, clock, fps=10, seconds=3.5)
     assert capsys.readouterr().out == ""
+    assert source.state.measured_fps == 0.0
 
 
 def test_frames_since_start_ignores_the_previous_connection():
     """RealSense waits for this to be positive before reporting it opened."""
-    source = reconnected(Clock(), frames_before=100, frames_after=0, seconds_after=0)
+    clock = Clock()
+    source = reconnected(clock)
     assert source._published_since_start() == 0

@@ -18,7 +18,7 @@ Nothing here touches hardware, so the contract and its tests run anywhere.
 import abc
 import threading
 import time
-from typing import Callable, NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional, Tuple
 
 from hazard_zone.frames import LatestFrame
 
@@ -29,6 +29,12 @@ from hazard_zone.frames import LatestFrame
 #: converged on 15 only after ten.
 GRACE_FRAMES = 45
 GRACE_SECONDS = 3.0
+
+#: Seconds the rate is counted over, from the end of the grace period,
+#: before it is reported or judged. Short enough to warn within seconds of
+#: starting; long enough that one frame more or less moves the figure by
+#: under 2 % at 30 fps.
+RATE_WINDOW_SECONDS = 2.0
 
 
 class SourceState(NamedTuple):
@@ -131,6 +137,11 @@ class FrameSource(abc.ABC):
         # frame since the first start. Rates and "has a frame arrived" are
         # questions about this connection, so they subtract this.
         self._published_at_start = 0
+        # (time, frames published) when the grace period ended; None until
+        # then. The rate is counted from here, never from the start: the
+        # start includes the camera's buffer emptying in a burst, which reads
+        # high, and the wait for its first frame, which reads low.
+        self._window: Optional[Tuple[float, int]] = None
         self._rate_warned = False
 
     # -- what a backend must write -----------------------------------------
@@ -224,8 +235,6 @@ class FrameSource(abc.ABC):
     def state(self) -> SourceState:
         """Current state, read atomically."""
         with self._lock:
-            elapsed = self._clock() - self._started_at if self._started_at else 0.0
-            published = self._published_since_start()
             return SourceState(
                 running=self._running,
                 attempts=self._attempts,
@@ -233,7 +242,7 @@ class FrameSource(abc.ABC):
                 last_error=self._last_error,
                 fatal=self._fatal,
                 requested_fps=self._requested_fps,
-                measured_fps=published / elapsed if elapsed > 0 else 0.0,
+                measured_fps=self._window_rate(),
             )
 
     # -- for backends ------------------------------------------------------
@@ -245,7 +254,23 @@ class FrameSource(abc.ABC):
             self._last_error = ""
             self._started_at = self._clock()
             self._published_at_start = self.frames.published
+            self._window = None
             self._rate_warned = False
+
+    def _window_rate(self) -> float:
+        """Frames per second since the grace period ended.
+
+        0.0 -- unknown, which SourceState treats as no fault -- until the
+        window has run for RATE_WINDOW_SECONDS.
+        """
+        window = self._window
+        if window is None:
+            return 0.0
+        since, published = window
+        elapsed = self._clock() - since
+        if elapsed < RATE_WINDOW_SECONDS:
+            return 0.0
+        return (self.frames.published - published) / elapsed
 
     def _published_since_start(self) -> int:
         """Frames published since the device last opened."""
@@ -267,9 +292,12 @@ class FrameSource(abc.ABC):
         The check cannot happen at startup. Negotiation succeeds -- the
         camera accepts the rate and starts -- and the shortfall only exists
         over time, so a rate error is invisible until frames have been
-        counted. GRACE_FRAMES exists because the first frames arrive from
-        the camera's buffer in a burst, which makes an early average
-        meaningless.
+        counted. And it cannot count from the start either: the first frames
+        arrive from the camera's buffer in a burst, which reads high, and
+        the first one can take over a second to arrive, which reads low --
+        measured, a camera delivering 30 fps was reported at 23.9 and
+        warned about. So nothing is counted until the grace period is over,
+        and the rate is judged over the window that follows it.
 
         This warns and does not fail. A hazard zone watched at 15 fps is
         worse than at 30 and far better than one not watched at all, so a
@@ -281,12 +309,19 @@ class FrameSource(abc.ABC):
         if self._rate_warned or not self._requested_fps:
             return
 
-        elapsed = self._clock() - self._started_at
-        published = self._published_since_start()
-        if published < GRACE_FRAMES or elapsed < GRACE_SECONDS:
+        if self._window is None:
+            elapsed = self._clock() - self._started_at
+            if (
+                self._published_since_start() >= GRACE_FRAMES
+                and elapsed >= GRACE_SECONDS
+            ):
+                self._window = (self._clock(), self.frames.published)
             return
 
-        measured = published / elapsed
+        measured = self._window_rate()
+        if not measured:
+            return  # the window has not run long enough yet
+
         self._rate_warned = True
         if measured < 0.8 * self._requested_fps:
             print(
