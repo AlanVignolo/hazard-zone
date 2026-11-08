@@ -64,6 +64,20 @@ from the repository root as `python3 -m scripts.<name>`.
 | `frame_interval` | The real interval between frames |
 | `align_cost` | The per-frame cost of aligning the whole depth map |
 
+## Configuration
+
+The camera backend is chosen by an environment variable, and has no default:
+
+| `HAZARD_ZONE_CAMERA` | Backend |
+| --- | --- |
+| `realsense` | depth camera through its SDK: colour, depth and calibration |
+| `v4l2` | any USB camera through GStreamer: colour only |
+
+Unset or any other value stops the system at start, before a device is
+opened. A default would let a service whose variable went missing run on a
+camera nobody chose, and falling back from the SDK to V4L2 would lose depth
+without saying so.
+
 ## Design
 
 The system is built so that everything except a thin hardware layer runs and
