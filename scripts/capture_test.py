@@ -10,83 +10,40 @@ the person is already at the machine. With the slot, the consumer always gets
 the newest frame, so latency is one processing cycle however long the run
 lasts.
 
-    python3 -m scripts.capture_test --seconds 15
-    python3 -m scripts.capture_test --seconds 15 --consume-ms 40
-    python3 -m scripts.capture_test --seconds 15 --raw-only
-    python3 -m scripts.capture_test --seconds 15 --realsense
+The camera is chosen the way the system chooses it, from HAZARD_ZONE_CAMERA:
+
+    HAZARD_ZONE_CAMERA=realsense python3 -m scripts.capture_test --seconds 15
+    HAZARD_ZONE_CAMERA=v4l2 python3 -m scripts.capture_test --seconds 15
+    HAZARD_ZONE_CAMERA=v4l2 python3 -m scripts.capture_test --card depth
+    HAZARD_ZONE_CAMERA=v4l2 python3 -m scripts.capture_test --consume-ms 40
 
 The --consume-ms option is the point of the exercise: it simulates a detector
 taking that long per frame. 40 ms is 25 fps, well under what the camera
 delivers, which is exactly the condition the design has to survive.
---realsense runs the depth camera through its SDK backend instead of the
-GStreamer one, and also counts how many frames carried depth with its
-calibration.
+--device, --card, --raw-only and --accelerated steer the V4L2 choice and are
+ignored by the SDK backend.
 """
 
 import argparse
+import os
 import time
 
-from hazard_zone.gst import GstSource
-from hazard_zone.negotiate import pick_format, select_node
-from hazard_zone.pipeline import build_pipeline
-from hazard_zone.probe import probe_video_nodes
-from hazard_zone.realsense import RealSenseSource
+from hazard_zone.camera import CameraSettings, CameraUnavailable, make_camera
 from scripts.stats import percentile, summarise
 
 RULE = "=" * 72
 
 
-def choose_mode(args):
-    """Run the real discovery path and return a pipeline, or None.
-
-    Reuses the production selection logic rather than hardcoding a device, so
-    a failure here is a failure of something that ships.
-    """
-    nodes = probe_video_nodes()
-    if not nodes:
-        print("No /dev/video* nodes found. Is a camera attached?")
-        return None
-
-    node = select_node(nodes, fps=args.fps, path=args.device, card=args.card)
-    if not node.ok:
-        print(f"NO USABLE NODE: {node.reason}")
-        for path, why in node.rejected:
-            print(f"  {path:<16} {why}")
-        return None
-
-    fmt = pick_format(
-        node.node.colour_formats,
-        args.width,
-        args.height,
-        args.fps,
-        allow_compressed=not args.raw_only,
-    )
-    if not fmt.ok:
-        print(f"NO USABLE FORMAT: {fmt.reason}")
-        return None
-
-    mode = fmt.fmt
-    print("device  : {}  ({})".format(node.node.path, node.node.card or "-"))
-    print(f"because : {node.reason}")
-    print(f"format  : {mode.fourcc.strip()} {mode.width}x{mode.height}")
-    print(f"because : {fmt.reason}")
-
-    # The pipeline asks for a rate the camera advertises, not the rate the
-    # selection asked for: selection treats fps as a floor, but a caps filter
-    # is an exact contract and an unadvertised value fails to negotiate.
-    rate = fmt.fps
-    pipeline = build_pipeline(
-        device=node.node.path,
-        width=mode.width,
-        height=mode.height,
-        fps=rate,
-        fourcc=mode.fourcc,
-        accelerated=args.accelerated,
-    )
-    print(f"rate    : {rate:g} fps requested of the pipeline")
+def describe_v4l2(choice):
+    """Print which node and mode were chosen, and why."""
+    node, fmt, pipeline = choice.node.node, choice.fmt.fmt, choice.pipeline
+    print("device  : {}  ({})".format(node.path, node.card or "-"))
+    print(f"because : {choice.node.reason}")
+    print(f"format  : {fmt.fourcc.strip()} {fmt.width}x{fmt.height}")
+    print(f"because : {choice.fmt.reason}")
+    print(f"rate    : {pipeline.fps:g} fps requested of the pipeline")
     print("decode  : {}".format("hardware" if pipeline.accelerated else "software"))
     print(f"\n{pipeline.launch}\n")
-    return pipeline
 
 
 def run(source, seconds, consume_ms):
@@ -212,16 +169,11 @@ def main() -> None:
     p.add_argument("--fps", type=float, default=30.0, help="minimum frame rate")
     p.add_argument("--width", type=int, default=1280)
     p.add_argument("--height", type=int, default=720)
-    p.add_argument("--device", help="force a specific /dev/videoN")
-    p.add_argument("--card", help="match a substring of the camera name")
-    p.add_argument("--raw-only", action="store_true", help="reject compressed modes")
+    p.add_argument("--device", help="v4l2: force a specific /dev/videoN")
+    p.add_argument("--card", help="v4l2: match a substring of the camera name")
+    p.add_argument("--raw-only", action="store_true", help="v4l2: no compressed modes")
     p.add_argument(
-        "--accelerated", action="store_true", help="use the NVIDIA decode elements"
-    )
-    p.add_argument(
-        "--realsense",
-        action="store_true",
-        help="use the depth camera's SDK backend instead of GStreamer",
+        "--accelerated", action="store_true", help="v4l2: use the NVIDIA decoders"
     )
     args = p.parse_args()
 
@@ -229,13 +181,30 @@ def main() -> None:
     print("CAPTURE TEST")
     print(RULE)
 
-    if args.realsense:
-        source = RealSenseSource(args.width, args.height, int(args.fps))
-    else:
-        pipeline = choose_mode(args)
-        if pipeline is None:
-            return
-        source = GstSource(pipeline)
+    settings = CameraSettings(
+        width=args.width,
+        height=args.height,
+        fps=args.fps,
+        device=args.device,
+        card=args.card,
+        allow_compressed=not args.raw_only,
+        accelerated=args.accelerated,
+    )
+    try:
+        camera = make_camera(os.environ, settings)
+    except ValueError as exc:
+        print(f"CONFIGURATION ERROR: {exc}")
+        return
+    except CameraUnavailable as exc:
+        print(f"NO CAMERA: {exc}")
+        for path, why in exc.choice.node.rejected:
+            print(f"  {path:<16} {why}")
+        return
+
+    print(f"camera  : {camera.kind}")
+    if camera.v4l2 is not None:
+        describe_v4l2(camera.v4l2)
+    source = camera.source
 
     started = time.monotonic()
     if not source.start():
@@ -245,7 +214,7 @@ def main() -> None:
         return
     print(f"playing after {time.monotonic() - started:.2f} s")
 
-    if args.realsense:
+    if camera.kind == "realsense":
         print(f"calibration: {source.calibration}")
 
     if args.consume_ms:
