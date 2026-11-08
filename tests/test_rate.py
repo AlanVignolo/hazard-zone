@@ -1,9 +1,12 @@
 """Tests for delivered-rate verification.
 
 A camera can negotiate a rate it does not deliver. Measured on this
-hardware: a camera advertising 1280x720 at both 30 and 15 fps accepted 30/1,
-reported 30 through V4L2, and produced a steady 15 -- at every resolution it
-offers, including one advertising 60. Nothing in the stack objected.
+hardware on 2026-11-01: a camera advertising 1280x720 at both 30 and 15 fps
+accepted 30/1, reported 30 through V4L2, and produced a steady 15 -- at
+every resolution it offers, including one advertising 60. Nothing in the
+stack objected. (On 2026-11-07, set up alone, the same camera delivered 30;
+why it did not before was never established. The shortfall was real while
+it lasted, which is what this check exists for.)
 
 These test the judgement, not the measurement: SourceState is a plain
 NamedTuple, so rate_ok can be checked without a camera, which is the point

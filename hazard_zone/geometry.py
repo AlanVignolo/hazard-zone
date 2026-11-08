@@ -194,8 +194,8 @@ def letterbox(image, dst_width: int, dst_height: int):
     above remains importable -- and testable -- on a machine without it.
 
     INTER_LINEAR is the interpolation: INTER_AREA is better for heavy
-    downscaling but costs more per frame, and at 15 fps on this hardware the
-    budget per frame is 67 ms shared with inference. Worth revisiting with a
+    downscaling but costs more per frame, and     downscaling but costs more per frame, and at 30 fps the budget per
+    frame is 33 ms shared with inference. Worth revisiting with a
     measurement rather than an opinion.
 
     Returns:

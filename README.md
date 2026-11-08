@@ -43,10 +43,16 @@ touch hardware; everything else is pure and tested on any machine.
 | **Depth path** | depth camera, through its SDK |
 | `realsense.py` | *device* — colour plus depth, with the depth scale and calibration |
 
-Why two paths: measured on the device, the depth camera delivers 15 fps over
-V4L2 at every mode, including those it advertises at 30 and 60, and 30 fps
-through its SDK. The SDK also reports the depth scale and the lens
-calibration, which V4L2 cannot.
+Why two paths: the SDK reports the depth scale and the lens calibration,
+which V4L2 cannot, and without them a depth reading has no units and a
+detection cannot be placed in metres. The generic path stays for cameras
+without depth.
+
+The rate over V4L2 is not settled. On 2026-11-01, with a second USB camera
+attached, the depth camera delivered 15 fps at every mode, including those
+it advertises at 30 and 60; on 2026-11-07, alone on the same port and in the
+same light, it delivered 30. The cause was not established. The SDK has
+delivered 30 throughout.
 
 `scripts/` holds diagnostic tools that are not part of the system; run them
 from the repository root as `python3 -m scripts.<name>`.

@@ -4,12 +4,13 @@ The hardware boundary for the depth path, the counterpart of ``gst`` for
 the generic one. Both publish into a LatestFrame and report the same
 SourceState, so nothing above this module knows which one is running.
 
-Why this path exists at all, when GStreamer already works: measured on
-this camera, V4L2 delivers 15 fps at every mode it advertises, including
-the ones it advertises as 30 and 60, and accepts 30 without complaint. The
-SDK delivers 30. Part of the camera's behaviour is not reachable over UVC.
-The SDK also provides the depth scale and the intrinsics, which V4L2
-cannot report and without which a depth reading is a number with no units.
+Why this path exists at all, when GStreamer already works: the SDK
+provides the depth scale and the calibration of both lenses, which V4L2
+cannot report, and without which a depth reading is a number with no units
+and a detection cannot be placed in metres. It has also delivered 30 fps
+throughout, where V4L2 gave 15 on 2026-11-01 -- with a second camera on the
+same USB controller -- and 30 on 2026-11-07 alone; why was never
+established.
 
 Nothing here is testable without the camera, so there is as little here as
 possible. The decisions -- the frame slot's dropping policy, the health
