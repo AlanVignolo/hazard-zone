@@ -3,7 +3,8 @@
 Edge AI hazard-zone monitor for machinery. A camera watches the danger zone
 around a machine; when a person, vehicle or animal enters it, the system
 detects them, measures how far away they are in metres, and shows it live:
-the camera image with each detection, its distance and the zone.
+the camera image with each detection, its distance and the zone, in a
+browser on any machine on the same network.
 
 An output to the machine's controller over CAN was planned and dropped:
 there is no controller here to act on it, and code with no receiver cannot
@@ -27,7 +28,7 @@ Work in progress.
 | Detector (TensorRT) | planned |
 | Tracker | planned |
 | Zone logic | planned |
-| Live view | planned |
+| Live view in a browser | planned |
 | Metrics and logging | planned |
 
 ## Layout
