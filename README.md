@@ -2,7 +2,13 @@
 
 Edge AI hazard-zone monitor for machinery. A camera watches the danger zone
 around a machine; when a person, vehicle or animal enters it, the system
-detects them and signals the machine controller over CAN.
+detects them, measures how far away they are in metres, and shows it live:
+the camera image with each detection, its distance and the zone.
+
+An output to the machine's controller over CAN was planned and dropped:
+there is no controller here to act on it, and code with no receiver cannot
+be tested against anything real. The decision -- who is inside the zone,
+in metres -- is the same either way; only where it is sent changes.
 
 Everything runs on the device, next to the sensor: no internet, no server.
 Target: a Jetson running Python 3.8.
@@ -21,7 +27,7 @@ Work in progress.
 | Detector (TensorRT) | planned |
 | Tracker | planned |
 | Zone logic | planned |
-| CAN output | planned |
+| Live view | planned |
 | Metrics and logging | planned |
 
 ## Layout
@@ -81,13 +87,13 @@ without saying so.
 ## Design
 
 The system is built so that everything except a thin hardware layer runs and
-is tested on a development machine. Capability parsing, geometry, zone state
-and CAN frame construction are pure functions over plain data; only capture,
-inference and bus access touch the device.
+is tested on a development machine. Capability parsing, geometry, depth
+projection and zone state are pure functions over plain data; only capture
+and inference touch the device.
 
 ```
 pytest              # logic, runs anywhere
-pytest -m hardware  # requires camera, GPU or CAN bus
+pytest -m hardware  # requires the camera or the GPU
 ```
 
 ## Development
