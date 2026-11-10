@@ -196,13 +196,51 @@ def test_a_lost_camera_keeps_the_same_slot():
 def test_stop_ends_a_loop_waiting_to_retry():
     source = FakeSource(["lost"] * 1000, retry_base=60.0, retry_max=60.0)
     thread = run_in_thread(source)
-    # start() clears the stop flag, so stopping before the first attempt
-    # would be undone by it. Waiting for the attempt tests the retry wait,
-    # which is what this is about.
+    # Waiting for the first attempt puts the loop in its retry wait, which
+    # is what this is about.
     assert source.tried.wait(JOIN)
     source.stop()
     thread.join(JOIN)
     assert not thread.is_alive()
+
+
+def test_a_stopped_source_does_not_start_again():
+    """stop() closed the slot; reopening the camera into it serves no one."""
+    source = FakeSource(["ok"])
+    source.stop()
+    assert not source.start()
+    assert source.state.last_error == "stopped"
+    assert source.outcomes == ["ok"]  # never opened
+
+
+class StoppedJustBeforeStart(FakeSource):
+    """A shutdown that lands after the loop's check and before start().
+
+    That gap is microseconds wide in the real system, so a test cannot wait
+    for it; this puts stop() inside it every time.
+    """
+
+    def start(self, timeout=10.0):
+        self.stop()
+        return super().start(timeout)
+
+
+def test_regression_a_stop_just_before_start_is_not_undone():
+    """The race: start() used to clear the stop request.
+
+    The supervisor checked the flag, the shutdown set it, and start() then
+    cleared it -- the camera reopened after the shutdown and the loop ran
+    forever. The thread is a daemon so that, if this regresses, the test
+    fails on the join instead of hanging the suite.
+    """
+    source = StoppedJustBeforeStart(["ok"] * 10)
+    thread = threading.Thread(
+        target=source.run_forever, kwargs={"poll": 0.001}, daemon=True
+    )
+    thread.start()
+    thread.join(JOIN)
+    assert not thread.is_alive()
+    assert not source.opened.is_set()
 
 
 # -- the rate --------------------------------------------------------------

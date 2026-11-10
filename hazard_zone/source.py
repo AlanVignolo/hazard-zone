@@ -183,9 +183,17 @@ class FrameSource(abc.ABC):
             ``state.last_error`` rather than raising, because a camera that
             is not there yet is an ordinary condition for a machine-mounted
             system, not an exception.
+
+        A stopped source stays stopped. ``stop`` closed its frame slot, so
+        there is nothing to reopen the camera for, and clearing the stop
+        request here would undo a shutdown that arrived between the
+        supervisor's check and this call -- the camera reopened after it,
+        and the loop never ended. To capture again, build a new source.
         """
         with self._lock:
-            self._stopping.clear()
+            if self._stopping.is_set():
+                self._last_error = "stopped"
+                return False
             self._attempts += 1
         return self._open(timeout)
 
