@@ -33,5 +33,5 @@ repos:
       - id: mypy
         language_version: python3.11
         args: ["--config-file=pyproject.toml"]
-        additional_dependencies: ["types-pyYAML"]
-        files: ^hazard_zone/
+        additional_dependencies: ["types-pyYAML", "pytest==8.3.5"]
+        files: ^(hazard_zone|scripts|tests)/
