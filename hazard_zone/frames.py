@@ -1,14 +1,16 @@
-"""The latest-frame slot.
+"""Passing the newest value between threads.
 
-Holds what happens when the camera produces faster than the consumer can keep
-up: keep the newest frame, drop the rest, and count the drops. Free of
-GStreamer and of any device access, so the concurrency behaviour -- the hard
-part -- is testable on a development machine.
+Holds what happens when a producer runs faster than its consumers can keep
+up: keep the newest, drop the rest. LatestFrame does it for one consumer and
+counts the drops; Broadcast does it for many readers, for results that
+several viewers watch. Free of GStreamer and of any device access, so the
+concurrency behaviour -- the hard part -- is testable on a development
+machine.
 """
 
 import threading
 import time
-from typing import TYPE_CHECKING, Any, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, Generic, NamedTuple, Optional, Tuple, TypeVar
 
 if TYPE_CHECKING:  # for annotations only; frames needs no numpy at import
     from hazard_zone.projection import DepthMap
@@ -196,3 +198,78 @@ class LatestFrame:
                 "consumed": self._seq - self._dropped - (self._frame is not None),
                 "closed": self._closed,
             }
+
+
+T = TypeVar("T")
+
+
+class Broadcast(Generic[T]):
+    """The newest value, for any number of readers.
+
+    LatestFrame has one consumer by design: taking a frame empties the slot,
+    so a second reader would steal frames from the first. Results headed for
+    the live view have several readers -- one per open browser tab -- and
+    each must see the same values without taking them from the others.
+
+    So nothing is taken. Every value gets a sequence number, and a reader
+    asks for anything newer than the last number it saw. A reader that falls
+    behind skips straight to the newest value, for the same reason
+    LatestFrame drops frames: a picture of the past is worth less than the
+    present, and a backlog would grow without bound.
+
+    Safe to use from any number of threads.
+    """
+
+    def __init__(self) -> None:
+        self._ready = threading.Condition()
+        self._latest: Optional[Tuple[int, T]] = None
+        self._closed = False
+
+    def put(self, value: T) -> int:
+        """Publish a value, waking every waiting reader. Never blocks.
+
+        Returns:
+            The sequence number given to the value, starting at 1.
+        """
+        with self._ready:
+            seq = self._latest[0] + 1 if self._latest is not None else 1
+            self._latest = (seq, value)
+            self._ready.notify_all()
+            return seq
+
+    def wait_newer(
+        self, seen: int, timeout: Optional[float] = None
+    ) -> Optional[Tuple[int, T]]:
+        """Wait for a value newer than ``seen``; return it with its number.
+
+        Args:
+            seen: The last sequence number this reader received; 0 for none.
+            timeout: Seconds to wait. None waits until a value or a close.
+
+        Returns:
+            ``(seq, value)``, or None on timeout or close with nothing newer.
+            A value published before the close is still delivered, so a
+            reader can drain what was there when the producer stopped.
+        """
+        with self._ready:
+            self._ready.wait_for(lambda: self._is_newer(seen) or self._closed, timeout)
+            return self._latest if self._is_newer(seen) else None
+
+    def latest(self) -> Optional[Tuple[int, T]]:
+        """The newest value and its number, without waiting; None if none."""
+        with self._ready:
+            return self._latest
+
+    def close(self) -> None:
+        """Wake every waiting reader for good: the producer has stopped."""
+        with self._ready:
+            self._closed = True
+            self._ready.notify_all()
+
+    @property
+    def closed(self) -> bool:
+        with self._ready:
+            return self._closed
+
+    def _is_newer(self, seen: int) -> bool:
+        return self._latest is not None and self._latest[0] > seen

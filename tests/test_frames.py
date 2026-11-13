@@ -9,10 +9,11 @@ machine cannot turn a passing test into a failing one.
 
 import threading
 import time
+from typing import List
 
 import pytest
 
-from hazard_zone.frames import Frame, LatestFrame
+from hazard_zone.frames import Broadcast, Frame, LatestFrame
 from hazard_zone.projection import DepthMap
 
 # --------------------------------------------------------------------------
@@ -383,3 +384,119 @@ def test_depth_arrives_with_its_calibration():
     assert got.has_depth
     assert got.depth is depth
     assert got.depth.calibration == "calibration"
+
+
+# -- Broadcast: the newest value for many readers ---------------------------
+
+#: Seconds a test waits on a thread before declaring it hung.
+JOIN = 2.0
+
+
+def test_a_reader_gets_the_newest_value_and_its_number():
+    box: Broadcast[str] = Broadcast()
+    box.put("a")
+    box.put("b")
+    assert box.wait_newer(0, timeout=0) == (2, "b")
+
+
+def test_nothing_newer_times_out_with_none():
+    box: Broadcast[str] = Broadcast()
+    box.put("a")
+    assert box.wait_newer(1, timeout=0.01) is None
+
+
+def test_nothing_ever_put_is_none():
+    box: Broadcast[str] = Broadcast()
+    assert box.latest() is None
+    assert box.wait_newer(0, timeout=0.01) is None
+
+
+def test_two_readers_see_the_same_value():
+    """The reason this exists: reading takes nothing from anyone else."""
+    box: Broadcast[str] = Broadcast()
+    box.put("a")
+    assert box.wait_newer(0, timeout=0) == (1, "a")
+    assert box.wait_newer(0, timeout=0) == (1, "a")
+    assert box.latest() == (1, "a")
+
+
+def test_a_reader_behind_skips_to_the_newest():
+    box: Broadcast[int] = Broadcast()
+    for value in range(10):
+        box.put(value)
+    assert box.wait_newer(3, timeout=0) == (10, 9)
+
+
+def test_a_waiting_reader_wakes_when_a_value_arrives():
+    box: Broadcast[str] = Broadcast()
+    waiting = threading.Event()
+    got = []
+
+    def read():
+        waiting.set()
+        got.append(box.wait_newer(0, timeout=JOIN))
+
+    reader = threading.Thread(target=read)
+    reader.start()
+    assert waiting.wait(JOIN)
+    box.put("a")
+    reader.join(JOIN)
+    assert not reader.is_alive()
+    assert got == [(1, "a")]
+
+
+def test_close_wakes_a_reader_waiting_forever():
+    """Without this, a server thread would block shutdown indefinitely."""
+    box: Broadcast[str] = Broadcast()
+    waiting = threading.Event()
+    got = []
+
+    def read():
+        waiting.set()
+        got.append(box.wait_newer(0, timeout=None))
+
+    reader = threading.Thread(target=read)
+    reader.start()
+    assert waiting.wait(JOIN)
+    box.close()
+    reader.join(JOIN)
+    assert not reader.is_alive()
+    assert got == [None]
+    assert box.closed
+
+
+def test_after_close_the_last_value_can_still_be_drained():
+    box: Broadcast[str] = Broadcast()
+    box.put("last")
+    box.close()
+    assert box.wait_newer(0, timeout=None) == (1, "last")
+    assert box.wait_newer(1, timeout=None) is None
+
+
+def test_every_reader_sees_numbers_only_increase():
+    """Invariant under concurrency: never a value twice, never one older."""
+    box: Broadcast[int] = Broadcast()
+    total = 2000
+    seen_by: List[List[int]] = [[] for _ in range(3)]
+
+    def read(seen_list):
+        seen = 0
+        while True:
+            got = box.wait_newer(seen, timeout=JOIN)
+            if got is None:
+                return
+            seen = got[0]
+            seen_list.append(seen)
+
+    readers = [threading.Thread(target=read, args=(s,)) for s in seen_by]
+    for reader in readers:
+        reader.start()
+    for value in range(total):
+        box.put(value)
+    box.close()
+    for reader in readers:
+        reader.join(JOIN)
+        assert not reader.is_alive()
+    for seen in seen_by:
+        assert seen == sorted(set(seen))
+        assert seen[-1] == total
