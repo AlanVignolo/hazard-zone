@@ -58,6 +58,11 @@ ignore = [
     "E501",  # line length is handled by the formatter
 ]
 
+[tool.ruff.lint.isort]
+# Fixed rather than detected: detection depends on where ruff runs from, and
+# the import order flipped between runs.
+known-first-party = ["hazard_zone", "scripts"]
+
 [tool.mypy]
 python_version = "3.8"
 # Gradual mode: catch the errors that matter without fighting untyped C

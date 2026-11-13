@@ -9,6 +9,7 @@ it.
 from pathlib import Path
 
 import pytest
+
 from hazard_zone.v4l2 import (
     CameraFormat,
     VideoNode,

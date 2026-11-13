@@ -7,6 +7,7 @@ surprises came from.
 """
 
 import pytest
+
 from hazard_zone.v4l2 import (
     COMPRESSED_FOURCCS,
     CameraFormat,
