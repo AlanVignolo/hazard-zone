@@ -69,7 +69,8 @@ def test_a_backend_without_release_cannot_be_built():
             return True
 
     with pytest.raises(TypeError):
-        Leaky(requested_fps=30.0)
+        # mypy reports the same fault this test is about.
+        Leaky(requested_fps=30.0)  # type: ignore[abstract]
 
 
 def test_construction_touches_nothing():

@@ -76,3 +76,10 @@ show_error_codes = true
 # than findings.
 module = ["gi.*", "cv2.*", "numpy.*", "pyrealsense2.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# In a test, an unexpected None already fails the test with AttributeError,
+# which is the right outcome. Asserting it away at every call would add
+# dozens of lines that check nothing the test does not already check.
+module = ["tests.*"]
+disable_error_code = ["union-attr"]

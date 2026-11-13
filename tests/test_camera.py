@@ -76,9 +76,10 @@ def test_realsense_is_built_without_probing():
 
 def test_realsense_gets_the_settings():
     settings = CameraSettings(width=640, height=480, fps=15)
-    camera = make_camera(env("realsense"), settings, probe=probe_must_not_run)
-    assert (camera.source.width, camera.source.height) == (640, 480)
-    assert camera.source.state.requested_fps == 15.0
+    source = make_camera(env("realsense"), settings, probe_must_not_run).source
+    assert isinstance(source, RealSenseSource)
+    assert (source.width, source.height) == (640, 480)
+    assert source.state.requested_fps == 15.0
 
 
 # -- the V4L2 choice -------------------------------------------------------

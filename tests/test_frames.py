@@ -376,7 +376,8 @@ def test_a_colour_only_frame_cannot_measure():
 def test_depth_arrives_with_its_calibration():
     """One object, so a map without the numbers to read it cannot exist."""
     slot = LatestFrame()
-    depth = DepthMap(raw="map", calibration="calibration")
+    # Any objects will do: the slot carries the map, it never reads it.
+    depth = DepthMap(raw="map", calibration="calibration")  # type: ignore[arg-type]
     slot.put("image", depth=depth)
     got = slot.get(timeout=0)
     assert got.has_depth
