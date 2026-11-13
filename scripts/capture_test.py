@@ -27,8 +27,10 @@ ignored by the SDK backend.
 import argparse
 import os
 import time
+from typing import List
 
 from hazard_zone.camera import CameraSettings, CameraUnavailable, make_camera
+from hazard_zone.realsense import RealSenseSource
 from scripts.stats import percentile, summarise
 
 RULE = "=" * 72
@@ -54,8 +56,8 @@ def run(source, seconds, consume_ms):
     moment the consumer holds the frame; the gap is between consecutive
     frames the consumer actually saw.
     """
-    latencies = []
-    gaps = []
+    latencies: List[float] = []
+    gaps: List[float] = []
     frames = 0
     with_depth = 0
     budget = consume_ms / 1000.0
@@ -214,7 +216,7 @@ def main() -> None:
         return
     print(f"playing after {time.monotonic() - started:.2f} s")
 
-    if camera.kind == "realsense":
+    if isinstance(source, RealSenseSource):
         print(f"calibration: {source.calibration}")
 
     if args.consume_ms:
