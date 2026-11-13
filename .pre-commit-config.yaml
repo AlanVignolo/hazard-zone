@@ -17,9 +17,21 @@ repos:
         args: ["--maxkb=2048"]
       - id: check-merge-conflict
 
+  # Same version as the dev dependency, so the hook and a local
+  # `ruff format` agree; when they differ, the hook reformats a commit that
+  # was already formatted and the commit is blocked.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.6
+    rev: v0.17.1
     hooks:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.14.1
+    hooks:
+      - id: mypy
+        language_version: python3.11
+        args: ["--config-file=pyproject.toml"]
+        additional_dependencies: ["types-pyYAML", "pytest==8.3.5"]
+        files: ^(hazard_zone|scripts|tests)/

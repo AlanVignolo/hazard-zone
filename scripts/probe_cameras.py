@@ -12,8 +12,8 @@ decision can be checked by eye before anything depends on it.
 
 import argparse
 
+from hazard_zone.negotiate import pick_format, select_node
 from hazard_zone.probe import probe_video_nodes
-from hazard_zone.v4l2 import pick_format, select_node
 
 RULE = "=" * 72
 
@@ -71,26 +71,27 @@ def main() -> None:
         for path, why in choice.rejected:
             print(f"  {path:<16} {why}")
 
-    if not choice.ok:
+    node = choice.node
+    if node is None:
         print(f"\nNO USABLE NODE: {choice.reason}")
         return
 
-    print(f"\nchosen  : {choice.node.path}")
+    print(f"\nchosen  : {node.path}")
     print(f"because : {choice.reason}")
 
     fmt = pick_format(
-        choice.node.colour_formats,
+        node.colour_formats,
         args.width,
         args.height,
         args.fps,
         allow_compressed=not args.raw_only,
     )
 
-    if not fmt.ok:
+    m = fmt.fmt
+    if m is None:
         print(f"\nNO USABLE FORMAT: {fmt.reason}")
         return
 
-    m = fmt.fmt
     print(f"\nformat  : {m.fourcc.strip()} {m.width}x{m.height} at {args.fps:g} fps")
     print(f"because : {fmt.reason}")
 
