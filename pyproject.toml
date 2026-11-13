@@ -26,7 +26,7 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "hardware: requires a real camera, CAN interface or GPU (skipped by default)",
+    "hardware: requires the real camera or GPU (skipped by default)",
 ]
 addopts = "-m 'not hardware'"
 
@@ -74,5 +74,5 @@ show_error_codes = true
 [[tool.mypy.overrides]]
 # These ship no type information, and insisting on it produces noise rather
 # than findings.
-module = ["gi.*", "cv2.*", "numpy.*", "can.*", "pyrealsense2.*"]
+module = ["gi.*", "cv2.*", "numpy.*", "pyrealsense2.*"]
 ignore_missing_imports = true
