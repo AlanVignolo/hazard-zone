@@ -10,6 +10,7 @@ anything that touches one.
 """
 
 import pytest
+
 from hazard_zone.geometry import (
     PAD_COLOUR,
     letterbox_params,
