@@ -28,17 +28,36 @@ Work in progress.
 | Detector (TensorRT) | planned |
 | Tracker | planned |
 | Zone logic | planned |
-| Live view in a browser | planned |
+| Live view in a browser | done |
 | Metrics and logging | planned |
+
+## Running
+
+On the Jetson, from the repository root:
+
+```
+HAZARD_ZONE_CAMERA=realsense HAZARD_ZONE_VIEW_PASSWORD='...' python3 -m hazard_zone
+```
+
+Then open `http://<jetson-address>:8080` in a browser on the same network;
+any user name, the password above. Every five seconds the process prints a
+status line: capture, processing, encoding and sending rates, and the cost
+and age of each image sent. Ctrl+C, or a service manager's stop, shuts it
+down cleanly.
+
+Measured on 2026-11-15 with one tab open: capture 30.0 fps with and without
+the tab, 15 fps sent, the image 13-44 ms old when sent (p95), encoding
+7-12 ms per image (p95) -- under 15 % of one CPU core.
 
 ## Layout
 
 Two ways to get frames, one contract between them. Modules marked *device*
-touch hardware; everything else is pure and tested on any machine.
+touch hardware, *network* opens a port; everything else is pure and tested
+on any machine.
 
 | Module | What it does |
 | --- | --- |
-| `frames.py` | `LatestFrame`: keeps only the newest frame and counts the ones dropped |
+| `frames.py` | `LatestFrame` keeps only the newest frame for one consumer and counts the ones dropped; `Broadcast` keeps the newest value for many readers |
 | `source.py` | `FrameSource`: the contract every camera backend meets, and the shared reconnection and health logic |
 | `geometry.py` | Fits a frame into the detector's input and maps boxes back |
 | **Generic path** | any USB camera, over V4L2 |
@@ -49,6 +68,13 @@ touch hardware; everything else is pure and tested on any machine.
 | `gst.py` | *device* — runs that pipeline and publishes frames |
 | **Depth path** | depth camera, through its SDK |
 | `realsense.py` | *device* — colour plus depth, with the depth scale and calibration |
+| **Shared by both** | |
+| `camera.py` | Chooses the backend from `HAZARD_ZONE_CAMERA` and builds it |
+| `projection.py` | Carries a colour pixel into the depth map and reads its distance in metres |
+| **The system** | |
+| `view.py` | Draws the measurements on a shrunk copy of the frame and encodes a JPEG |
+| `web.py` | *network* — serves the page and the MJPEG stream, behind a password |
+| `app.py` | Wires it all together; `python3 -m hazard_zone` runs it |
 
 Why two paths: the SDK reports the depth scale and the lens calibration,
 which V4L2 cannot, and without them a depth reading has no units and a
@@ -73,7 +99,9 @@ from the repository root as `python3 -m scripts.<name>`.
 
 ## Configuration
 
-The camera backend is chosen by an environment variable, and has no default:
+Two environment variables, neither with a default.
+
+The camera backend:
 
 | `HAZARD_ZONE_CAMERA` | Backend |
 | --- | --- |
@@ -84,6 +112,15 @@ Unset or any other value stops the system at start, before a device is
 opened. A default would let a service whose variable went missing run on a
 camera nobody chose, and falling back from the SDK to V4L2 would lose depth
 without saying so.
+
+The live view's password, `HAZARD_ZONE_VIEW_PASSWORD`, at least eight
+characters. It is sent with HTTP Basic authentication, which does not
+encrypt it: fine on a local network, not beyond one. Reaching the view from
+the internet has to go through a VPN or a tunnel, never through a port
+opened on the router to the Jetson.
+
+A configuration error exits with status 2, before anything is opened; a
+fault at runtime, such as a camera that cannot be opened, with status 1.
 
 ## Design
 
