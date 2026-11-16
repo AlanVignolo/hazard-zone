@@ -9,7 +9,7 @@ shares none of this code.
 import numpy as np
 import pytest
 
-from hazard_zone.detector import PIXEL_SCALE, input_buffer, prepare
+from hazard_zone.detector import PIXEL_SCALE, input_buffer, prepare, warm_up
 from hazard_zone.geometry import PAD_COLOUR
 
 cv2 = pytest.importorskip("cv2")
@@ -139,3 +139,22 @@ def test_an_image_that_is_not_8_bit_is_refused(out):
     """A float image would be scaled by 1/255 a second time."""
     with pytest.raises(ValueError, match="8-bit"):
         prepare(frame().astype(np.float32), out)
+
+
+# -- warming up ----------------------------------------------------------------
+
+
+def test_warming_up_prepares_a_blank_frame_into_the_buffer(out):
+    """Its whole job is to have run once; what it leaves is a valid input."""
+    out.fill(-1.0)
+    warm_up(out)
+    grey = [c / 255 for c in PAD_COLOUR[::-1]]
+    assert out[0, :, 0, 320].tolist() == pytest.approx(grey)  # padding
+    assert out[0, :, 192, 320].tolist() == pytest.approx([0.0, 0.0, 0.0])  # image
+
+
+def test_warming_up_follows_the_buffer_size():
+    """The engine sets the size; warming up must not assume 640x384."""
+    square = input_buffer(640, 640)
+    warm_up(square)
+    assert square[0, :, 320, 320].tolist() == pytest.approx([0.0, 0.0, 0.0])

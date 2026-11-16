@@ -22,7 +22,7 @@ from typing import List
 
 import numpy as np
 
-from hazard_zone.detector import prepare
+from hazard_zone.detector import prepare, warm_up
 from hazard_zone.inference import Engine, engine_path_from_env
 from scripts.stats import percentile, summarise
 
@@ -53,6 +53,8 @@ def main() -> int:
     print(f"engine: {path}")
     print(f"  input {shapes.width}x{shapes.height}, {shapes.candidates} candidates")
 
+    # The first prepare takes ~285 ms (docs/detector.md 3.11): paid here.
+    warm_up(engine.input)
     frame = np.random.RandomState(0).randint(0, 256, (720, 1280, 3)).astype(np.uint8)
     prepare_ms: List[float] = []
     infer_ms: List[float] = []

@@ -7,7 +7,7 @@ by hand. ``docs/detector.md`` explains each step; the section numbers in
 the comments point into it.
 """
 
-from typing import Any
+from typing import Any, Tuple
 
 import numpy as np
 
@@ -72,3 +72,17 @@ def prepare(image: Any, out: np.ndarray) -> Letterbox:
     # 0-255 to 0-1, written straight into the buffer the GPU will read.
     np.multiply(chw, PIXEL_SCALE, out=out[0], casting="unsafe")
     return box
+
+
+def warm_up(
+    out: np.ndarray, frame_shape: Tuple[int, int, int] = (720, 1280, 3)
+) -> None:
+    """Run ``prepare`` once on a blank frame, so its first call is paid at start.
+
+    Measured on the device: the first call took 285 ms and every one of the
+    next 1,499 under 10 -- most likely OpenCV starting its worker threads the
+    first time it runs something in parallel. On a real frame that would be a
+    third of a second without detection; paid here, before the camera's first
+    frame is read, it costs nothing.
+    """
+    prepare(np.zeros(frame_shape, np.uint8), out)
