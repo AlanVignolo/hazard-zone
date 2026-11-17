@@ -1,9 +1,9 @@
 """Drawing what the system measured onto the image, for the live view.
 
-What to draw is decided here as plain data -- a Mark is a point, a text and
-whether the reading is good -- so the decisions are tested without OpenCV.
-Only ``render`` touches pixels: it shrinks the frame, draws the marks and
-encodes a JPEG, in that order.
+What to draw is decided here as plain data -- a BoxMark is a box, a text and
+whether its distance was measured -- so the decisions are tested without
+OpenCV. Only ``render`` touches pixels: it shrinks the frame, draws the
+marks and encodes a JPEG, in that order.
 
 Shrinking comes first because everything after it is paid per pixel: at
 640x360 the drawing and the encoding handle a quarter of what they would at
@@ -14,9 +14,10 @@ the frame it receives is the one the detector reads: marks painted into it
 would be detected as part of the scene.
 """
 
-from typing import Any, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, NamedTuple, Sequence, Tuple
 
-from hazard_zone.projection import DepthMatch
+from hazard_zone.detector import Detection
+from hazard_zone.distance import BoxDistance
 
 #: Width the view is sent at; the height follows the frame's proportions.
 VIEW_WIDTH = 640
@@ -25,44 +26,35 @@ VIEW_WIDTH = 640
 #: of the size of 95.
 JPEG_QUALITY = 80
 
-# Colours in OpenCV's order, blue-green-red.
-GOOD = (80, 200, 80)
-WARN = (0, 170, 255)
+# Colours in OpenCV's order, blue-green-red. Green means measured, not
+# safe: there is no zone yet (docs/detector.md 6.4).
+MEASURED = (80, 200, 80)
+ALARM = (40, 40, 230)
 TEXT = (255, 255, 255)
 SHADOW = (0, 0, 0)
 
 
-class Mark(NamedTuple):
-    """One thing to point at on the image.
+class BoxMark(NamedTuple):
+    """One detection to draw.
 
     Attributes:
-        u: Column in the full-size colour frame, in pixels.
-        v: Row in the full-size colour frame, in pixels.
-        text: What to write beside it.
-        ok: Whether the reading is trustworthy; drawn in a warning colour
-            when not, so a refused reading never looks like a measurement.
+        box: (x1, y1, x2, y2) in the full-size colour frame, in pixels.
+        text: The class and the distance.
+        measured: Whether the distance was measured. When not, drawn in the
+            alarm colour: an object without a distance counts as inside the
+            zone (docs/detector.md 5.5), and must never look measured.
     """
 
-    u: float
-    v: float
+    box: Tuple[float, float, float, float]
     text: str
-    ok: bool
+    measured: bool
 
 
-def distance_mark(u: float, v: float, match: Optional[DepthMatch]) -> Mark:
-    """A mark showing the distance at a colour pixel, or why there is none.
-
-    Args:
-        u: Column of the pixel.
-        v: Row of the pixel.
-        match: The pixel's depth match, or None when the frame carries no
-            depth at all -- a colour-only camera.
-    """
-    if match is None:
-        return Mark(u, v, "no depth", False)
-    if not match.ok:
-        return Mark(u, v, match.reason, False)
-    return Mark(u, v, f"{match.point[2]:.2f} m", True)
+def box_mark(detection: Detection, distance: BoxDistance) -> BoxMark:
+    """What to draw for one detection and its distance."""
+    if not distance.ok:
+        return BoxMark(detection.box, f"{detection.label} ? m", False)
+    return BoxMark(detection.box, f"{detection.label} {distance.metres:.2f} m", True)
 
 
 def view_size(width: int, height: int, max_width: int = VIEW_WIDTH) -> Tuple[int, int]:
@@ -77,7 +69,7 @@ def view_size(width: int, height: int, max_width: int = VIEW_WIDTH) -> Tuple[int
 
 def render(
     image: Any,
-    marks: Sequence[Mark],
+    marks: Sequence[BoxMark],
     status: str = "",
     max_width: int = VIEW_WIDTH,
     quality: int = JPEG_QUALITY,
@@ -109,10 +101,14 @@ def render(
 
     sx, sy = out_w / width, out_h / height
     for mark in marks:
-        x, y = int(round(mark.u * sx)), int(round(mark.v * sy))
-        colour = GOOD if mark.ok else WARN
-        cv2.drawMarker(view, (x, y), colour, cv2.MARKER_CROSS, 20, 2)
-        _label(view, mark.text, (x + 12, y - 12), colour)
+        x1, y1, x2, y2 = mark.box
+        top_left = (int(round(x1 * sx)), int(round(y1 * sy)))
+        bottom_right = (int(round(x2 * sx)), int(round(y2 * sy)))
+        colour = MEASURED if mark.measured else ALARM
+        cv2.rectangle(view, top_left, bottom_right, colour, 2)
+        # Above the box; inside it when the box touches the top of the view.
+        _label(view, mark.text, (top_left[0] + 2, max(top_left[1] - 6, 14)), colour)
+
     if status:
         _label(view, status, (8, 20), TEXT)
 

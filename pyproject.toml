@@ -80,7 +80,7 @@ show_error_codes = true
 [[tool.mypy.overrides]]
 # These ship no type information, and insisting on it produces noise rather
 # than findings.
-module = ["gi.*", "cv2.*", "numpy.*", "pyrealsense2.*"]
+module = ["gi.*", "cv2.*", "numpy.*", "pyrealsense2.*", "tensorrt.*", "pycuda.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

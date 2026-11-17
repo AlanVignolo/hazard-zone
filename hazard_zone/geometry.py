@@ -17,7 +17,7 @@ an image, so the whole transform can be verified without OpenCV and without
 a single frame.
 """
 
-from typing import List, NamedTuple, Sequence, Tuple
+from typing import Any, List, NamedTuple, Sequence, Tuple
 
 #: Fill colour for the padding, as BGR. 114 is what YOLO's own letterboxing
 #: uses during training, so a model has seen exactly this grey in exactly
@@ -187,14 +187,14 @@ def scale_boxes(
     return out
 
 
-def letterbox(image, dst_width: int, dst_height: int):
+def letterbox(image: Any, dst_width: int, dst_height: int) -> Tuple[Any, Letterbox]:
     """Scale and pad a frame to the detector's input size.
 
     OpenCV is imported here rather than at module level so the arithmetic
     above remains importable -- and testable -- on a machine without it.
 
     INTER_LINEAR is the interpolation: INTER_AREA is better for heavy
-    downscaling but costs more per frame, and     downscaling but costs more per frame, and at 30 fps the budget per
+    downscaling but costs more per frame, and at 30 fps the budget per
     frame is 33 ms shared with inference. Worth revisiting with a
     measurement rather than an opinion.
 

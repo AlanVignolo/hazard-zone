@@ -1,4 +1,4 @@
-"""The running system: camera, measurement and live view, wired together.
+"""The running system: camera, detector and live view, wired together.
 
 Each stage runs in its own thread and hands the newest result to the next,
 dropping what it cannot keep up with, so no stage can slow the one before:
@@ -6,14 +6,18 @@ dropping what it cannot keep up with, so no stage can slow the one before:
     camera -> LatestFrame -> main loop -> Broadcast[Result]
            -> encoder (15 fps) -> Broadcast[bytes] -> browser tabs
 
-The main loop is where the detector will run. Today it measures the
-distance at the centre of the frame, which exercises the whole path --
-depth, calibration, projection, drawing, encoding, serving -- before there
-is anything to detect.
+The detector runs in the main loop, one frame at a time: prepare, infer,
+read the output, measure each box. Its own thread would gain nothing: the
+GPU's context belongs to the thread that opened the engine, and Python's
+global lock is the whole process's, so a second thread would not keep the
+detector's pure-Python steps from delaying the camera's (docs/detector.md
+6.2-6.3).
 
-Configuration is read before anything is opened: a missing camera choice
-or password stops the process with a message and exit status 2, without
-touching the camera or the network.
+Configuration is read before anything is opened: a missing camera choice,
+password or engine stops the process with a message and exit status 2,
+without touching the camera or the network. The engine is opened next, and
+an engine that will not load is a configuration fault too: restarting will
+not change it.
 
 Every few seconds a status line reports what the live view's acceptance
 criteria are judged on, counted over that interval rather than averaged
@@ -26,12 +30,17 @@ import signal
 import sys
 import threading
 import time
-from typing import Any, Callable, List, Mapping, NamedTuple, Optional, Tuple
+from typing import Any, Callable, List, Mapping, NamedTuple, Optional, Protocol, Tuple
+
+import numpy as np
 
 from hazard_zone.camera import CameraUnavailable, make_camera
+from hazard_zone.detector import decode, prepare, warm_up
+from hazard_zone.distance import box_distances
 from hazard_zone.frames import Broadcast, Frame
-from hazard_zone.projection import colours_to_depth
-from hazard_zone.view import Mark, distance_mark, render
+from hazard_zone.gpu import clock_floor_warning, temperature
+from hazard_zone.inference import Engine, engine_path_from_env
+from hazard_zone.view import BoxMark, box_mark, render
 from hazard_zone.web import ViewServer, password_from_env
 
 #: Frames per second sent to the browser. Enough to follow movement; each
@@ -56,17 +65,28 @@ class Result(NamedTuple):
     """One frame and what the system concluded about it."""
 
     frame: Frame
-    marks: Tuple[Mark, ...]
+    marks: Tuple[BoxMark, ...]
 
 
-def measure_centre(frame: Frame) -> Mark:
-    """The distance at the centre of the frame, or why there is none."""
-    height, width = frame.image.shape[:2]
-    u, v = width / 2.0, height / 2.0
-    if frame.depth is None:
-        return distance_mark(u, v, None)
-    match = colours_to_depth(frame.depth.raw, frame.depth.calibration, [(u, v)])[0]
-    return distance_mark(u, v, match)
+class Network(Protocol):
+    """What the loop needs of the engine: a buffer to prepare into, and a run.
+
+    ``Engine`` is one; a test stands in another, with a fixed output, so
+    the loop's logic is tested without a GPU.
+    """
+
+    @property
+    def input(self) -> np.ndarray: ...
+
+    def infer(self) -> np.ndarray: ...
+
+
+def analyse(frame: Frame, engine: Network) -> Tuple[BoxMark, ...]:
+    """Detect, then measure, one frame: what the main loop does with it."""
+    box = prepare(frame.image, engine.input)
+    found = decode(engine.infer(), box).found
+    distances = box_distances([d.box for d in found], frame.depth)
+    return tuple(box_mark(d, r) for d, r in zip(found, distances))
 
 
 def percentile(values: List[float], fraction: float) -> float:
@@ -179,23 +199,40 @@ def _status(result: Result) -> str:
 
 
 def status_line(
-    covered: float, counts: dict, samples: dict, capture_fps: float, tabs: int
+    covered: float,
+    counts: dict,
+    samples: dict,
+    capture_fps: float,
+    tabs: int,
+    gpu_c: Optional[float] = None,
 ) -> str:
-    """One line with the figures the live view is judged on."""
+    """One line with the figures the system is judged on.
+
+    The detector's maximum is shown beside its p95: a rare spike is what
+    the percentile hides, and in this system a spike is a frame unseen.
+    """
     if covered <= 0:
         return "status: no time elapsed"
 
     def rate(name: str) -> float:
         return float(counts.get(name, 0)) / covered
 
+    def p95(name: str) -> float:
+        return percentile(samples.get(name, []), 0.95)
+
     per_tab = rate("sent") / tabs if tabs else 0.0
+    slowest = max(samples.get("detect_ms", [0.0]))
+    gpu = "--" if gpu_c is None else f"{gpu_c:.0f}"
     return (
         f"capture {capture_fps:4.1f} fps | "
         f"processed {rate('processed'):4.1f} fps | "
+        f"detect p95 {p95('detect_ms'):5.1f} max {slowest:5.1f} ms | "
+        f"boxes {counts.get('boxes', 0)} ({counts.get('unknown', 0)} at ? m) | "
         f"encoded {rate('encoded'):4.1f} fps | "
         f"sent {per_tab:4.1f} fps x {tabs} tab(s) | "
-        f"encode p95 {percentile(samples.get('encode_ms', []), 0.95):5.1f} ms | "
-        f"age p95 {percentile(samples.get('age_ms', []), 0.95):5.1f} ms"
+        f"encode p95 {p95('encode_ms'):5.1f} ms | "
+        f"age p95 {p95('age_ms'):5.1f} ms | "
+        f"gpu {gpu} C"
     )
 
 
@@ -203,6 +240,7 @@ def main(environ: Mapping[str, str] = os.environ) -> int:
     """Run the system until interrupted. Returns the process exit status."""
     try:
         password = password_from_env(environ)
+        engine_path = engine_path_from_env(environ)
         camera = make_camera(environ)
     except ValueError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
@@ -212,6 +250,19 @@ def main(environ: Mapping[str, str] = os.environ) -> int:
         for path, why in exc.choice.node.rejected:
             print(f"  {path:<16} {why}", file=sys.stderr)
         return EXIT_FAULT
+
+    # Takes seconds, and before the camera: a frame must not wait on it.
+    engine = Engine(engine_path)
+    try:
+        shapes = engine.open()
+    except (ValueError, ImportError) as exc:
+        print(f"engine: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    warm_up(engine.input)
+    print(f"engine: {engine_path}, input {shapes.width}x{shapes.height}")
+    warning = clock_floor_warning()
+    if warning is not None:
+        print(f"warning: {warning}", file=sys.stderr)
 
     stopping = threading.Event()
 
@@ -244,8 +295,13 @@ def main(environ: Mapping[str, str] = os.environ) -> int:
                 if source.frames.closed:
                     break  # the camera's supervisor gave up: a fatal fault
             else:
-                results.put(Result(frame, (measure_centre(frame),)))
+                started = time.perf_counter()
+                marks = analyse(frame, engine)
+                stats.sample("detect_ms", (time.perf_counter() - started) * 1000.0)
+                results.put(Result(frame, marks))
                 stats.count("processed")
+                stats.count("boxes", len(marks))
+                stats.count("unknown", sum(1 for m in marks if not m.measured))
 
             if time.monotonic() >= status_due:
                 status_due += STATUS_SECONDS
@@ -253,13 +309,18 @@ def main(environ: Mapping[str, str] = os.environ) -> int:
                 stats.count("sent", sent_now - sent_before)
                 sent_before = sent_now
                 state = source.state
-                print(status_line(*stats.take(), state.measured_fps, server.streams))
+                print(
+                    status_line(
+                        *stats.take(), state.measured_fps, server.streams, temperature()
+                    )
+                )
     finally:
         source.stop()
         results.close()
         encoder.stop()
         server.stop()
         supervisor.join(2.0)
+        engine.close()
 
     state = source.state
     if state.fatal:
