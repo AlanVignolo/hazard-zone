@@ -24,30 +24,58 @@ Work in progress.
 | Capture from any USB camera (GStreamer) | done |
 | Capture with depth through the camera SDK | done |
 | Letterbox and mapping detections back | done |
-| Distance to a detection, in metres | in progress |
-| Detector (TensorRT) | planned |
+| Detector: YOLOv8n on TensorRT, FP16 | done |
+| Distance to each detection, in metres | done |
+| Live view with boxes and distances | done |
 | Tracker | planned |
 | Zone logic | planned |
-| Live view in a browser | done |
+| Model benchmark (size, precision) | planned |
 | Metrics and logging | planned |
 
 ## Running
 
-On the Jetson, from the repository root:
+The detector runs a TensorRT engine, which is built on the device it runs
+on and never committed. Export the network to ONNX on any machine with
+`ultralytics` installed, copy the `.onnx` to the Jetson, and build the
+engine there:
 
 ```
-HAZARD_ZONE_CAMERA=realsense HAZARD_ZONE_VIEW_PASSWORD='...' python3 -m hazard_zone
+yolo export model=yolov8n.pt format=onnx imgsz=384,640 opset=12 simplify=True
+trtexec --onnx=yolov8n.onnx --saveEngine=models/yolov8n_384x640_fp16.engine --fp16
+```
+
+The input is 640x384 rather than 640x640 because the camera's frames are
+16:9: the square input spent 44 % of the network's work on padding, and did
+not fit the frame budget.
+
+Hold the GPU at its top clock. Between frames it sits idle while the
+processor works, the power manager lowers its clock, and the next inference
+starts slow: p95 14 ms instead of 11.6. The process warns at start when the
+floor is not fixed, and prints the command to fix it (needs root).
+
+Then, from the repository root:
+
+```
+HAZARD_ZONE_CAMERA=realsense \
+HAZARD_ZONE_ENGINE=models/yolov8n_384x640_fp16.engine \
+HAZARD_ZONE_VIEW_PASSWORD='...' python3 -m hazard_zone
 ```
 
 Then open `http://<jetson-address>:8080` in a browser on the same network;
-any user name, the password above. Every five seconds the process prints a
-status line: capture, processing, encoding and sending rates, and the cost
-and age of each image sent. Ctrl+C, or a service manager's stop, shuts it
-down cleanly.
+any user name, the password above. Each person, vehicle or animal is drawn
+as a box with its class and distance: green when measured, red with `? m`
+when the depth camera gave too few readings -- which counts as inside the
+zone, since someone pressed against the camera reads as holes, not as
+near. Every five seconds the process prints a status line: capture,
+processing and detection rates, the detector's p95 and maximum, how many
+boxes had no distance, encoding and sending, and the GPU's temperature.
+Ctrl+C, or a service manager's stop, shuts it down cleanly.
 
-Measured on 2026-11-15 with one tab open: capture 30.0 fps with and without
-the tab, 15 fps sent, the image 13-44 ms old when sent (p95), encoding
-7-12 ms per image (p95) -- under 15 % of one CPU core.
+Measured on 2026-11-17 with one person in view and one tab open, GPU clock
+fixed: capture 29.9-30.0 fps, every frame processed, detection 19-21 ms per
+frame (p95), the image 56-59 ms old when sent (p95), 15 fps sent, encoding
+5-8 ms per image (p95). The worst case staged on the bench -- eight people
+-- takes 23.5 ms of the 33 available per frame.
 
 ## Layout
 
@@ -71,8 +99,13 @@ on any machine.
 | **Shared by both** | |
 | `camera.py` | Chooses the backend from `HAZARD_ZONE_CAMERA` and builds it |
 | `projection.py` | Carries a colour pixel into the depth map and reads its distance in metres |
+| **The detector** | |
+| `detector.py` | Prepares a frame for the network and reads its output into detections: letterbox, colour order, NMS, a 16-class allowlist |
+| `inference.py` | *device* — loads the TensorRT engine and runs it, from page-locked memory |
+| `distance.py` | The distance of each detection: nine points inside its box, the third nearest |
+| `gpu.py` | *device* — reads the GPU's clock floor and temperature |
 | **The system** | |
-| `view.py` | Draws the measurements on a shrunk copy of the frame and encodes a JPEG |
+| `view.py` | Draws each detection's box and distance on a shrunk copy of the frame and encodes a JPEG |
 | `web.py` | *network* — serves the page and the MJPEG stream, behind a password |
 | `app.py` | Wires it all together; `python3 -m hazard_zone` runs it |
 
@@ -96,10 +129,12 @@ from the repository root as `python3 -m scripts.<name>`.
 | `capture_test` | That latency stays flat when the consumer is slower than the camera |
 | `frame_interval` | The real interval between frames |
 | `align_cost` | The per-frame cost of aligning the whole depth map |
+| `project_points` | Carrying points to the depth map, against the SDK's own search |
+| `detector_bench` | Each step of the main loop, against limits fixed before measuring |
 
 ## Configuration
 
-Two environment variables, neither with a default.
+Three environment variables, none with a default.
 
 The camera backend:
 
@@ -112,6 +147,10 @@ Unset or any other value stops the system at start, before a device is
 opened. A default would let a service whose variable went missing run on a
 camera nobody chose, and falling back from the SDK to V4L2 would lose depth
 without saying so.
+
+The detector's engine, `HAZARD_ZONE_ENGINE`: the path to a TensorRT engine
+file built on this device. An engine TensorRT cannot load -- typically one
+built by another version -- stops the system at start, with status 2.
 
 The live view's password, `HAZARD_ZONE_VIEW_PASSWORD`, at least eight
 characters. It is sent with HTTP Basic authentication, which does not
