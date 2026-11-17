@@ -1,9 +1,10 @@
 """Tests for the running system's parts that need no camera.
 
 The wiring in ``main`` needs the device and is judged there, against the
-live view's criteria. What is tested here is everything around it: the
-measurement, the encoder's pacing and choice of frame, the per-interval
-figures, and that bad configuration stops the process before it starts.
+live view's criteria. What is tested here is everything around it: what
+the loop does with a frame (with the GPU replaced by a fixed output), the
+encoder's pacing and choice of frame, the per-interval figures, and that
+bad configuration stops the process before it starts.
 """
 
 import threading
@@ -17,15 +18,19 @@ from hazard_zone.app import (
     Encoder,
     IntervalStats,
     Result,
+    analyse,
     main,
-    measure_centre,
     percentile,
     status_line,
 )
 from hazard_zone.camera import CAMERA_ENV
+from hazard_zone.detector import input_buffer
 from hazard_zone.frames import Broadcast, Frame
+from hazard_zone.inference import ENGINE_ENV
 from hazard_zone.projection import DepthMap
+from hazard_zone.view import BoxMark
 from hazard_zone.web import PASSWORD_ENV
+from tests.test_decode import PERSON, output
 from tests.test_projection import CALIB, wall
 
 JOIN = 2.0
@@ -37,26 +42,59 @@ def frame(seq=1, depth=None, captured_at=None):
     return Frame(image, seq, stamp, depth)
 
 
-# -- the measurement ---------------------------------------------------------
+# -- what the loop does with a frame -----------------------------------------
 
 
-def test_the_centre_reads_the_wall_in_front():
-    mark = measure_centre(frame(depth=DepthMap(wall(2.0), CALIB)))
-    assert (mark.u, mark.v) == (640.0, 360.0)
-    assert mark.ok
-    assert mark.text == "2.00 m"
+class FakeEngine:
+    """Stands in for the GPU: hands back a fixed output, as TensorRT would.
+
+    Has what ``analyse`` uses of the real one: an input buffer to prepare
+    into, and ``infer``.
+    """
+
+    def __init__(self, raw):
+        self.input = input_buffer(640, 384)
+        self.raw = raw
+        self.inferred = 0
+
+    def infer(self):
+        self.inferred += 1
+        return self.raw
 
 
-def test_a_frame_without_depth_says_so():
-    mark = measure_centre(frame())
-    assert not mark.ok
-    assert mark.text == "no depth"
+# A person in the engine's input; in the frame, (540, 160)-(740, 560).
+ONE_PERSON = output((320, 192, 100, 200, PERSON, 0.9))
 
 
-def test_a_map_with_no_readings_is_refused_not_zero():
-    mark = measure_centre(frame(depth=DepthMap(wall(0.0), CALIB)))
-    assert not mark.ok
-    assert "m" not in mark.text.split()  # no distance is shown
+def test_a_person_in_front_of_a_wall_is_boxed_with_its_distance():
+    marks = analyse(frame(depth=DepthMap(wall(2.0), CALIB)), FakeEngine(ONE_PERSON))
+    assert marks == (BoxMark((540.0, 160.0, 740.0, 560.0), "person 2.00 m", True),)
+
+
+def test_a_frame_without_depth_still_boxes_the_person():
+    """Detected and unmeasured: drawn, in the alarm colour, never dropped."""
+    (mark,) = analyse(frame(), FakeEngine(ONE_PERSON))
+    assert (mark.text, mark.measured) == ("person ? m", False)
+
+
+def test_a_map_with_no_readings_boxes_the_person_without_a_number():
+    (mark,) = analyse(frame(depth=DepthMap(wall(0.0), CALIB)), FakeEngine(ONE_PERSON))
+    assert (mark.text, mark.measured) == ("person ? m", False)
+
+
+def test_an_empty_scene_gives_no_marks():
+    engine = FakeEngine(output())
+    assert analyse(frame(depth=DepthMap(wall(2.0), CALIB)), engine) == ()
+    assert engine.inferred == 1
+
+
+def test_the_frame_is_prepared_into_the_engine_input():
+    """A white frame: every pixel the network sees of it is 1.0."""
+    image = np.full((720, 1280, 3), 255, np.uint8)
+    engine = FakeEngine(output())
+    analyse(Frame(image, 1, time.monotonic(), None), engine)
+    # Rows 12-371 are the image; the rest is the letterbox's padding.
+    assert engine.input[0, :, 12:372, :].min() == 1.0
 
 
 # -- figures per interval ----------------------------------------------------
@@ -95,17 +133,39 @@ def test_percentile(values, fraction, expected):
 
 
 def test_the_status_line_carries_each_criterion():
-    counts = {"processed": 150, "encoded": 75, "sent": 150}
+    counts = {
+        "processed": 145,
+        "encoded": 75,
+        "sent": 150,
+        "boxes": 212,
+        "unknown": 37,
+    }
     # Two high values in twenty: one alone would sit above the p95.
-    samples = {"encode_ms": [4.0] * 18 + [7.5] * 2, "age_ms": [40.0] * 18 + [90.0] * 2}
-    line = status_line(5.0, counts, samples, capture_fps=30.2, tabs=2)
-    for figure in ("30.2", "30.0", "15.0", "7.5", "90.0"):
+    samples = {
+        "encode_ms": [4.0] * 18 + [7.5] * 2,
+        "age_ms": [40.0] * 18 + [90.0] * 2,
+        "detect_ms": [18.0] * 18 + [21.5, 41.4],
+    }
+    line = status_line(5.0, counts, samples, capture_fps=30.2, tabs=2, gpu_c=47.4)
+    for figure in ("30.2", "29.0", "15.0", "7.5", "90.0", "21.5", "212", "37", "47"):
         assert figure in line, figure
+
+
+def test_the_status_line_shows_the_slowest_detection():
+    """The p95 hides a rare spike; the maximum is what shows it (3.11)."""
+    samples = {"detect_ms": [18.0] * 99 + [41.4]}
+    line = status_line(5.0, {}, samples, capture_fps=30.0, tabs=1)
+    assert "41.4" in line
 
 
 def test_no_tabs_reports_nothing_sent():
     line = status_line(5.0, {"sent": 0}, {}, capture_fps=30.0, tabs=0)
     assert "0.0" in line
+
+
+def test_no_temperature_sensor_is_shown_as_unknown_not_zero():
+    line = status_line(5.0, {}, {}, capture_fps=30.0, tabs=1, gpu_c=None)
+    assert "gpu -- C" in line
 
 
 # -- the encoder -------------------------------------------------------------
@@ -216,6 +276,16 @@ def test_no_password_exits_with_the_configuration_status(capsys):
     assert PASSWORD_ENV in capsys.readouterr().err
 
 
-def test_no_camera_choice_exits_with_the_configuration_status(capsys):
-    assert main({PASSWORD_ENV: "long enough password"}) == EXIT_CONFIG
+def test_no_camera_choice_exits_with_the_configuration_status(tmp_path, capsys):
+    engine = tmp_path / "model.engine"
+    engine.write_bytes(b"")
+    environ = {PASSWORD_ENV: "long enough password", ENGINE_ENV: str(engine)}
+    assert main(environ) == EXIT_CONFIG
     assert CAMERA_ENV in capsys.readouterr().err
+
+
+def test_no_engine_exits_with_the_configuration_status(capsys):
+    """Read with the rest of the configuration, before anything is opened."""
+    environ = {PASSWORD_ENV: "long enough password", CAMERA_ENV: "realsense"}
+    assert main(environ) == EXIT_CONFIG
+    assert ENGINE_ENV in capsys.readouterr().err

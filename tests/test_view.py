@@ -10,40 +10,47 @@ import math
 import numpy as np
 import pytest
 
-from hazard_zone.projection import DepthMatch
+from hazard_zone.detector import Detection
+from hazard_zone.distance import BoxDistance
 from hazard_zone.view import (
-    GOOD,
+    ALARM,
+    MEASURED,
     VIEW_WIDTH,
-    WARN,
-    Mark,
-    distance_mark,
+    BoxMark,
+    box_mark,
     render,
     view_size,
 )
 
-
-def match(metres=1.84, reason="ok"):
-    return DepthMatch((320, 240), metres, (0.1, 0.0, metres), 1.0, reason)
+PERSON = Detection((540.0, 160.0, 740.0, 560.0), "person", "person", 0.9)
 
 
 # -- what to draw ------------------------------------------------------------
 
 
-def test_a_good_match_shows_metres_along_the_colour_axis():
-    mark = distance_mark(640, 360, match(1.844))
-    assert mark == Mark(640, 360, "1.84 m", True)
+def test_a_measured_box_shows_its_class_and_metres():
+    mark = box_mark(PERSON, BoxDistance((0.1, 0.0, 2.314), 9, "ok"))
+    assert mark == BoxMark(PERSON.box, "person 2.31 m", True)
 
 
-def test_a_refused_match_shows_why_and_is_not_ok():
-    """A refusal must never look like a measurement."""
-    mark = distance_mark(640, 360, match(reason="no valid depth on line"))
-    assert mark.text == "no valid depth on line"
-    assert not mark.ok
+def test_the_label_is_the_class_not_the_category():
+    truck = Detection((0.0, 0.0, 10.0, 10.0), "vehicle", "truck", 0.8)
+    mark = box_mark(truck, BoxDistance((0.0, 0.0, 7.0), 9, "ok"))
+    assert mark.text == "truck 7.00 m"
 
 
-def test_no_depth_at_all_says_so():
-    mark = distance_mark(640, 360, None)
-    assert (mark.text, mark.ok) == ("no depth", False)
+@pytest.mark.parametrize(
+    "distance",
+    [
+        BoxDistance((0.0, 0.0, 0.0), 2, "too few readings"),
+        BoxDistance((0.0, 0.0, 0.0), 0, "no depth"),
+    ],
+)
+def test_no_distance_shows_a_question_mark_never_a_number(distance):
+    """Never "0.00 m": an unknown distance must not look like a measurement
+    (docs/detector.md 5.5)."""
+    mark = box_mark(PERSON, distance)
+    assert mark == BoxMark(PERSON.box, "person ? m", False)
 
 
 # -- how big to send it ------------------------------------------------------
@@ -95,7 +102,7 @@ def test_the_frame_is_never_drawn_on(cv2):
     """The detector reads the same frame: marks in it would be detected."""
     for image in (black(), black(640, 480)):  # shrunk, and not shrunk
         before = image.copy()
-        render(image, [Mark(320, 240, "1.00 m", True)], status="status")
+        render(image, [BoxMark((100, 100, 300, 300), "x", True)], status="status")
         assert np.array_equal(image, before)
 
 
@@ -105,23 +112,40 @@ def colour_near(view, x, y, radius=6):
     return patch[np.argmax(patch.astype(int).sum(axis=1))]
 
 
-@pytest.mark.parametrize("ok, colour, other", [(True, GOOD, WARN), (False, WARN, GOOD)])
-def test_a_mark_lands_where_it_points_in_its_colour(cv2, ok, colour, other):
+@pytest.mark.parametrize(
+    "measured, colour, other", [(True, MEASURED, ALARM), (False, ALARM, MEASURED)]
+)
+def test_a_box_lands_where_it_points_in_its_colour(cv2, measured, colour, other):
     """Full-size coordinates, mapped to the shrunk view.
 
-    JPEG stores colour at lower resolution than brightness, so a cross two
-    pixels wide comes back with its colour shifted by about 77 units --
-    measured. What has to survive is the difference that matters: a good
-    reading and a refused one must not be mistaken for each other.
+    JPEG stores colour at lower resolution than brightness, so a line two
+    pixels wide comes back with its colour shifted -- by about 77 units,
+    measured on the earlier cross. What has to survive is the difference
+    that matters: a measured box and one without a distance must not be
+    mistaken for each other.
     """
-    view = decode(cv2, render(black(), [Mark(1000, 200, "x", ok)]))
-    drawn = colour_near(view, 500, 100)  # 1000/2, 200/2
+    mark = BoxMark((900, 100, 1100, 300), "x", measured)
+    view = decode(cv2, render(black(), [mark]))
+    drawn = colour_near(view, 500, 50)  # middle of the top edge: 1000/2, 100/2
     assert math.dist(drawn, colour) < math.dist(drawn, other)
     assert view[300:, :200].max() < 20  # far from it, still black
 
 
-def test_marks_off_the_frame_are_drawn_without_failing(cv2):
-    render(black(), [Mark(-50, -50, "off", True), Mark(5000, 5000, "off", False)])
+def test_the_inside_of_a_box_is_not_painted(cv2):
+    """A box is an outline: what is inside must stay visible."""
+    view = decode(cv2, render(black(), [BoxMark((800, 200, 1200, 600), "x", True)]))
+    assert view[180:220, 480:520].max() < 20  # the centre, 1000/2 and 400/2
+
+
+def test_boxes_off_the_frame_are_drawn_without_failing(cv2):
+    render(
+        black(),
+        [
+            BoxMark((-50, -50, -10, -10), "off", True),
+            BoxMark((5000, 5000, 6000, 6000), "off", False),
+            BoxMark((0, 0, 1280, 720), "whole frame", True),
+        ],
+    )
 
 
 def test_quality_trades_size(cv2):
